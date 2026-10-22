@@ -358,9 +358,9 @@ Số lượng cụ thể sẽ chốt sau pilot, dự kiến N_chat ≈ N_tool �
 ### Giai đoạn 0 — Hạ tầng
 - [ ] Khung repo (mục 8), `requirements.txt`, config YAML cho từng thí nghiệm
 - [ ] Load base và các model Instruct, chạy thử generate trên CPU **với cấu hình dừng ở mục 2.4**
-- [ ] Module chat template, loss mask, parser, scorer AST, kèm unit test
+- [x] Module chat template, loss mask, parser, scorer cấu trúc ban đầu, kèm unit test (chưa phải evaluator BFCL đầy đủ; quy tắc metric nghiên cứu sẽ khóa sau pilot)
 - [ ] `train.py` chạy được `MAX_STEPS=5` ở local, đẩy checkpoint lên Hub, resume được, log token đã học
-- [ ] Notebook Colab dùng chung code trong `src/` (không viết logic trong notebook)
+- [x] Notebook Colab dùng chung code trong `src/` (không viết logic train trong notebook)
 
 ### Giai đoạn 1 — Dữ liệu và bộ eval
 - [ ] Tải và chuyển đổi dữ liệu, áp quy tắc độ dài, ghi `data/REPORT.md`
