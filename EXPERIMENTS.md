@@ -77,3 +77,28 @@ Server trả `result: true`; đã lấy danh sách công cụ và gọi `get_cel
 - **Raw `The capital of France is`:** cả ba đều bắt đầu bằng ` Paris`; base và 360M-Instruct lặp tới hết ngân sách, 1.7B-Instruct dừng sau 3 token.
 
 **Ý nghĩa cho các bước sau:** base cần SFT để biết dừng và giữ vai trò; 360M-Instruct là mốc chat hợp lý nhưng không phải mốc tool. Trước E0 cần một prompt riêng cho 1.7B theo format function calling của nó.
+
+## 2026-10-22 — Phase 0: chạy thử train SFT, checkpoint lên Hub và resume
+
+**Loại hoạt động:** kiểm tra hạ tầng train, không phải thí nghiệm. Dữ liệu là 4 ví dụ viết tay trong `src/sft_examples.py`; loss ở đây không nói gì về năng lực.
+
+**Thiết lập:** `src/train.py` với `configs/smoke.yaml`: base `f8027fd`, 5 step, batch 2, lr 2e-5 cosine, fp16 AMP, gradient checkpointing, lưu mỗi 2 step với đầy đủ trạng thái (optimizer, scheduler, GradScaler, RNG, vị trí dữ liệu). Hub dùng `hub_strategy="checkpoint"`, repo private. Colab T4, notebook `01_train_smoke.ipynb` chạy qua MCP; phiên bản thư viện ghi trong `requirements.lock`.
+
+**Kiểm chứng ở local (Llama ngẫu nhiên nhỏ, CPU):** chạy liền 4 step và chạy 2 step → lưu → resume → 2 step cho loss và `assistant_tokens_seen` trùng nhau. Test bắt được lỗi khi cố tình tắt khôi phục vị trí dữ liệu hoặc tắt khôi phục bộ đếm.
+
+**Kết quả trên Colab:**
+
+| Step | Chạy liền (loss, token) | Dừng ở step 2, đẩy Hub, resume từ Hub |
+|---|---|---|
+| 1 | 1.75653, 55 | 1.75653, 55 |
+| 2 | 1.11975, 155 | 1.11975, 155 |
+| 3 | 1.48754, 212 | 1.48728, 212 |
+| 4 | 0.75629, 310 | 0.7558, 310 |
+| 5 | 1.1093, 365 | 1.11, 365 |
+
+- `assistant_tokens_seen` khớp ở mọi step, nên thứ tự dữ liệu được khôi phục đúng. Loss sau resume lệch ở chữ số thứ tư. Hai lần chạy liền cũng lệch nhau cùng cỡ (step 4: 0.75554 và 0.75629), còn hai lần resume cho kết quả giống hệt; độ lệch đến từ fp16 trên GPU không tất định, không phải từ resume.
+- Step 1 có `grad_norm = inf`: GradScaler fp16 bỏ qua bước đầu khi scale khởi tạo quá lớn, và lr ở step 1 bằng 0 do warmup 3% làm tròn thành 1 step. Cả hai là hành vi bình thường, nhưng với lần chạy thật cần nhớ step đầu không cập nhật trọng số.
+- Bộ nhớ GPU đỉnh 5,6 GiB (trọng số fp32 + Adam + gradient của 360M). Thời gian train khoảng 114 giây cho 5 step, chủ yếu do lưu hai checkpoint đầy đủ; tính cả upload lên Hub thì một lần chạy 2 step mất khoảng 2 phút.
+- Lần chạy đầu, cell cài thư viện không cài đúng phiên bản mà không báo lỗi (Colab giữ `transformers` 5.20.1, thiếu `trl`). Notebook nay kiểm tra phiên bản sau khi cài; kết quả ở bảng trên là lần chạy lại với đúng phiên bản.
+
+**Ghi chú vận hành:** secret `HF_TOKEN` chỉ đọc được khi cell chạy từ giao diện Colab, không đọc được qua MCP; người dùng chạy cell đăng nhập một lần, các cell sau dùng biến môi trường đó.

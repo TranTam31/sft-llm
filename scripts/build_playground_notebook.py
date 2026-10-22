@@ -12,6 +12,10 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+# Same pins as requirements.txt; Colab supplies torch.
+INFERENCE_PINS = [("transformers", "5.20.2"), ("huggingface-hub", "1.32.0"), ("psutil", "7.2.2"),
+                  ("safetensors", "0.8.0"), ("pyyaml", "6.0.3")]
+TRAINING_PINS = [("accelerate", "1.15.0"), ("datasets", "5.1.0"), ("peft", "0.21.2"), ("trl", "1.16.0")]
 
 
 def cell(kind, text):
@@ -22,28 +26,16 @@ def cell(kind, text):
     return result
 
 
-def build():
+def source_bundle():
     paths = (sorted((ROOT / "src").glob("*.py")) + sorted((ROOT / "configs").glob("*.yaml"))
              + sorted((ROOT / "tests").glob("test_*.py")))
     payload = json.dumps({str(path.relative_to(ROOT)).replace("\\", "/"): path.read_text(encoding="utf-8")
                           for path in paths}, ensure_ascii=False).encode("utf-8")
-    encoded = base64.b64encode(payload).decode("ascii")
-    digest = hashlib.sha256(payload).hexdigest()
-    cells = [
-        cell("markdown", """# Phase 0 — Quan sát base model trước SFT
+    return base64.b64encode(payload).decode("ascii"), hashlib.sha256(payload).hexdigest()
 
-Chạy từng cell từ trên xuống. Notebook này **không train**, không chạy test set nghiên cứu và không cần token Hugging Face.
 
-Mục tiêu: xem tokenization, xác suất token tiếp theo, raw completion, phản ứng với ChatML và cách chuẩn bị nhãn SFT.
-**Token không nhất thiết là một từ**: có thể là một phần từ, dấu cách hoặc dấu câu.
-
-CPU runtime đủ cho lần thử ngắn; GPU là tùy chọn. Mã inference nằm trong `src/`, được đóng gói từ repo khi tạo notebook này.
-Kết quả chỉ nằm trong runtime Colab cho đến khi tải xuống. Notebook chưa lưu trên Drive thì chọn **Copy to Drive** nếu muốn giữ lại các thay đổi.
-"""),
-        cell("markdown", "## 1. Cài thư viện\nCell này dùng torch có sẵn của Colab, chỉ cài các thư viện inference còn lại."),
-        cell("code", "%pip install -q transformers==5.20.2 huggingface-hub==1.32.0 psutil==7.2.2 safetensors==0.8.0 pyyaml==6.0.3\n"),
-        cell("markdown", "## 2. Nạp mã nguồn của dự án\nBundle bên dưới chỉ gồm `src/*.py`, `configs/*.yaml` và các test offline; không có dữ liệu cá nhân hay thông tin đăng nhập. Sửa logic tại repo rồi chạy lại `python scripts/build_playground_notebook.py` để cập nhật notebook."),
-        cell("code", f'''import base64, hashlib, json, os, sys
+def bundle_code(encoded, digest):
+    return f'''import base64, hashlib, json, os, sys
 from pathlib import Path
 
 payload = base64.b64decode("{encoded}")
@@ -62,14 +54,58 @@ for module_name in list(sys.modules):
         del sys.modules[module_name]
 print("Source bundle SHA-256:", "{digest}")
 print("Working directory:", root)
-'''),
-        cell("markdown", "## 3. Kiểm tra mã trước khi tải model\nBao gồm test offline và integration test trên một Llama ngẫu nhiên cực nhỏ. Model nhỏ này chỉ kiểm tra code, không đo năng lực SmolLM2."),
-        cell("code", '''import subprocess
+'''
+
+
+def install_code(pins):
+    """pip can leave Colab's preinstalled versions in place without failing; check after installing."""
+    wanted = ", ".join(f'"{name}": "{version}"' for name, version in pins)
+    return f'''%pip install -q {" ".join(f"{name}=={version}" for name, version in pins)}
+from importlib.metadata import version
+wanted = {{{wanted}}}
+installed = {{name: version(name) for name in wanted}}
+print(installed)
+assert installed == wanted, "Phiên bản chưa khớp requirements.txt; chạy lại cell này."
+'''
+
+
+TESTS_CODE = '''import subprocess
 checks = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"], capture_output=True, text=True)
 print(checks.stdout)
 print(checks.stderr)
 checks.check_returncode()
-'''),
+'''
+
+
+def write_notebook(name, cells, digest):
+    notebook = {"cells": cells, "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
+                 "language_info": {"name": "python"}, "colab": {"name": name}},
+                "nbformat": 4, "nbformat_minor": 5}
+    target = ROOT / "notebooks" / name
+    target.parent.mkdir(exist_ok=True)
+    target.write_text(json.dumps(notebook, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    print(f"Built {target} ({len(cells)} cells); source SHA-256 {digest}")
+
+
+def build():
+    encoded, digest = source_bundle()
+    cells = [
+        cell("markdown", """# Phase 0 — Quan sát base model trước SFT
+
+Chạy từng cell từ trên xuống. Notebook này **không train**, không chạy test set nghiên cứu và không cần token Hugging Face.
+
+Mục tiêu: xem tokenization, xác suất token tiếp theo, raw completion, phản ứng với ChatML và cách chuẩn bị nhãn SFT.
+**Token không nhất thiết là một từ**: có thể là một phần từ, dấu cách hoặc dấu câu.
+
+CPU runtime đủ cho lần thử ngắn; GPU là tùy chọn. Mã inference nằm trong `src/`, được đóng gói từ repo khi tạo notebook này.
+Kết quả chỉ nằm trong runtime Colab cho đến khi tải xuống. Notebook chưa lưu trên Drive thì chọn **Copy to Drive** nếu muốn giữ lại các thay đổi.
+"""),
+        cell("markdown", "## 1. Cài thư viện\nCell này dùng torch có sẵn của Colab, chỉ cài các thư viện inference còn lại."),
+        cell("code", install_code(INFERENCE_PINS)),
+        cell("markdown", "## 2. Nạp mã nguồn của dự án\nBundle bên dưới chỉ gồm `src/*.py`, `configs/*.yaml` và các test offline; không có dữ liệu cá nhân hay thông tin đăng nhập. Sửa logic tại repo rồi chạy lại `python scripts/build_playground_notebook.py` để cập nhật notebook."),
+        cell("code", bundle_code(encoded, digest)),
+        cell("markdown", "## 3. Kiểm tra mã trước khi tải model\nBao gồm test offline và integration test trên một Llama ngẫu nhiên cực nhỏ. Model nhỏ này chỉ kiểm tra code, không đo năng lực SmolLM2."),
+        cell("code", TESTS_CODE),
         cell("markdown", "## 4. Tải base model một lần\nDùng `auto`: có CUDA thì chạy GPU, còn lại CPU. Không cập nhật trọng số. Cell in revision chính xác để lần sau có thể tải lại đúng bản."),
         cell("code", '''import importlib, psutil, torch
 import src.playground
@@ -237,14 +273,79 @@ from google.colab import files
 files.download("results/exploratory/outputs.jsonl")
 '''),
     ]
-    notebook = {"cells": cells, "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
-                 "language_info": {"name": "python"}, "colab": {"name": "00_base_playground.ipynb"}},
-                "nbformat": 4, "nbformat_minor": 5}
-    target = ROOT / "notebooks" / "00_base_playground.ipynb"
-    target.parent.mkdir(exist_ok=True)
-    target.write_text(json.dumps(notebook, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
-    print(f"Built {target} ({len(cells)} cells); source SHA-256 {digest}")
+    write_notebook("00_base_playground.ipynb", cells, digest)
+
+
+def build_train_smoke():
+    encoded, digest = source_bundle()
+    cells = [
+        cell("markdown", """# Phase 0 — Chạy thử train SFT
+
+Kiểm tra hạ tầng train trước Phase 1: train vài step trên 4 ví dụ viết tay, lưu checkpoint đầy đủ, đẩy lên HF Hub, rồi resume từ Hub. Đây **không** phải thí nghiệm; loss ở đây không mang ý nghĩa năng lực.
+
+Nên dùng runtime **T4 GPU** (Runtime → Change runtime type) để đo thời gian và bộ nhớ như lúc train thật. Logic train nằm trong `src/train.py`; notebook chỉ gọi nó.
+"""),
+        cell("markdown", "## 1. Cài thư viện\nDùng torch có sẵn của Colab; cài đúng các phiên bản trong `requirements.txt`."),
+        cell("code", install_code(INFERENCE_PINS + TRAINING_PINS)),
+        cell("markdown", "## 2. Nạp mã nguồn của dự án\nSửa logic tại repo rồi chạy lại `python scripts/build_playground_notebook.py` để cập nhật notebook."),
+        cell("code", bundle_code(encoded, digest)),
+        cell("markdown", "## 3. Kiểm tra mã\nGồm test resume trên Llama ngẫu nhiên cực nhỏ: chạy liền 4 step phải cho cùng loss với 2 step, lưu, resume, 2 step."),
+        cell("code", TESTS_CODE),
+        cell("markdown", """## 4. Đăng nhập HF Hub
+
+Cần secret `HF_TOKEN` (token có quyền ghi) trong 🔑 **Secrets** của Colab, đã bật **Notebook access**. Token không được in ra hay ghi vào repo. Điền `HUB_MODEL_ID` dạng `<username>/<tên repo>`; repo được tạo ở chế độ private ở lần push đầu.
+"""),
+        cell("code", '''from google.colab import userdata
+from huggingface_hub import whoami
+
+os.environ["HF_TOKEN"] = userdata.get("HF_TOKEN")
+HUB_MODEL_ID = ""  # ví dụ "your-username/smollm2-360m-sft-smoke"
+print("Logged in as:", whoami()["name"])
+assert HUB_MODEL_ID, "Điền HUB_MODEL_ID trước khi chạy tiếp."
+'''),
+        cell("markdown", """## 5. Chạy liền 5 step (mốc so sánh)
+
+Không đẩy lên Hub. Đường loss này dùng để so với lần chạy bị ngắt rồi resume ở mục 6–7.
+"""),
+        cell("code", '''import json, shutil, subprocess
+
+shutil.rmtree("results/runs", ignore_errors=True)  # Mỗi lần chạy thử bắt đầu sạch.
+
+def train(*extra):
+    command = [sys.executable, "-m", "src.train", "--config", "configs/smoke.yaml", *extra]
+    completed = subprocess.run(command, capture_output=True, text=True)
+    print(completed.stdout[-3000:])
+    if completed.returncode:
+        print(completed.stderr[-5000:])
+    completed.check_returncode()
+
+def losses(output_dir):
+    history = json.loads(Path(output_dir, "metrics.json").read_text())["log_history"]
+    return {row["step"]: (round(row["loss"], 5), row["assistant_tokens_seen"]) for row in history if "loss" in row}
+
+train("--output-dir", "results/runs/smoke-straight")
+straight = losses("results/runs/smoke-straight")
+print(straight)
+'''),
+        cell("markdown", "## 6. Chạy lại, dừng sau step 2 và đẩy checkpoint lên Hub\nCheckpoint ở step 2 được đẩy lên `last-checkpoint/` của repo Hub."),
+        cell("code", '''train("--output-dir", "results/runs/smoke-split", "--hub-model-id", HUB_MODEL_ID, "--stop-after", "2")
+print(losses("results/runs/smoke-split"))
+'''),
+        cell("markdown", "## 7. Resume từ Hub và so sánh\nTải `last-checkpoint/` từ Hub, train tiếp tới step 5. Loss ở step 3–5 phải gần bằng lần chạy liền (fp16 trên GPU có thể lệch ở chữ số cuối)."),
+        cell("code", '''train("--output-dir", "results/runs/smoke-split", "--hub-model-id", HUB_MODEL_ID, "--resume", "hub")
+resumed = losses("results/runs/smoke-split")
+for step in sorted(straight):
+    print(step, "straight", straight[step], "resumed", resumed.get(step))
+metrics = json.loads(Path("results/runs/smoke-split/metrics.json").read_text())
+print({key: metrics[key] for key in ("global_step", "assistant_tokens_seen", "train_runtime", "peak_gpu_memory_gib")})
+'''),
+        cell("markdown", "## 8. Ghi lại môi trường\nIn danh sách phiên bản thư viện để lưu vào `requirements.lock` trong repo."),
+        cell("code", '''print(subprocess.run([sys.executable, "-m", "pip", "freeze"], capture_output=True, text=True).stdout)
+'''),
+    ]
+    write_notebook("01_train_smoke.ipynb", cells, digest)
 
 
 if __name__ == "__main__":
     build()
+    build_train_smoke()

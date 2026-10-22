@@ -356,10 +356,10 @@ Số lượng cụ thể sẽ chốt sau pilot, dự kiến N_chat ≈ N_tool �
 ## 6. Các giai đoạn và checklist
 
 ### Giai đoạn 0 — Hạ tầng
-- [ ] Khung repo (mục 8), `requirements.txt`, config YAML cho từng thí nghiệm (đã có `configs/models.yaml` và requirements cho train; còn `requirements.lock` và config train)
+- [x] Khung repo (mục 8), `requirements.txt`, `requirements.lock`, config YAML (`configs/models.yaml`, `configs/smoke.yaml`; config E1–E6 viết khi thiết kế xong ở Phase 1–2)
 - [x] Load base và các model Instruct, chạy thử generate trên CPU **với cấu hình dừng ở mục 2.4** (chạy trên Colab CPU; máy local không đủ RAM)
 - [x] Module chat template, loss mask, parser, scorer cấu trúc ban đầu, kèm unit test (chưa phải evaluator BFCL đầy đủ; quy tắc metric nghiên cứu sẽ khóa sau pilot)
-- [ ] `train.py` chạy được `MAX_STEPS=5` ở local, đẩy checkpoint lên Hub, resume được, log token đã học
+- [x] `train.py` chạy được `MAX_STEPS=5`, đẩy checkpoint lên Hub, resume được, log token đã học (local chỉ test với Llama nhỏ vì thiếu RAM; chạy thật trên Colab T4)
 - [x] Notebook Colab dùng chung code trong `src/` (không viết logic train trong notebook)
 
 ### Giai đoạn 1 — Dữ liệu và bộ eval
@@ -417,13 +417,16 @@ Mục đích: kiểm tra hạ tầng và kiểm tra **scorer chấm đúng**, **
 PLAN.md                 kế hoạch này
 EXPERIMENTS.md          nhật ký: giả thuyết trước run → kết quả sau run
 REPORT.md               báo cáo cuối
-configs/                e1_seq.yaml, e2_mix.yaml, e3_lora_r8.yaml, e3_lora_r64.yaml, …
+configs/                models.yaml (model + revision), smoke.yaml, e1_seq.yaml, e2_mix.yaml, …
 data/
   REPORT.md             thống kê dữ liệu, tỉ lệ mẫu bị loại, kết quả phân cụm
 src/
   data/                 tải, chuyển format, phân cụm và tách seen/unseen, rename, khử trùng lặp
-  chat_format.py        template, cấu hình token dừng, loss mask, parser <tool_call>
-  train.py              SFT (TRL SFTTrainer), callback lưu/đẩy checkpoint, đếm token
+  chat_format.py        system prompt, tool policy, ChatML cho một lượt
+  sft_data.py           chat template, loss mask, kiểm tra độ dài, padding
+  tool_calls.py         serialize, parse và chấm cấu trúc <tool_call>
+  playground.py         nạp model theo configs/models.yaml, generate với cấu hình dừng
+  train.py              SFT (transformers Trainer), đẩy checkpoint lên Hub, resume, đếm token
   eval/
     generate.py         generate theo batch cho P / T / C
     scorers.py          scorer AST, clarify, grounded (luật + LLM judge)
@@ -435,7 +438,7 @@ src/
   run_eval.py           chạy toàn bộ eval cho một checkpoint, ghi vào results/
 eval_sets/              dev/ và test/ đã đóng băng + MANIFEST.md
 notebooks/
-  colab_runner.ipynb    điều khiển train/eval trên Colab
+  00_base_playground.ipynb, 01_train_smoke.ipynb   sinh từ src/ bằng scripts/build_playground_notebook.py
   analysis.ipynb        sinh biểu đồ cho báo cáo
 results/                metrics.json, outputs.jsonl, all.csv
 tests/                  unit test cho format, mask, parser, scorer

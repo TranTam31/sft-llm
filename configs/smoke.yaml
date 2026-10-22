@@ -1,0 +1,20 @@
+# Phase 0 smoke run: prove train -> checkpoint -> Hub -> resume works. Not an experiment.
+run_name: smoke
+model: base                  # configs/models.yaml key or Hub id
+data: inspection             # the handwritten examples in src/sft_examples.py
+output_dir: results/runs/smoke
+hub_model_id: null           # e.g. <username>/smollm2-360m-sft-smoke; null keeps checkpoints local
+
+max_seq_len: 1024
+max_steps: 5
+per_device_train_batch_size: 2
+gradient_accumulation_steps: 1
+learning_rate: 2.0e-5
+lr_scheduler_type: cosine
+warmup_ratio: 0.03
+weight_decay: 0.0
+max_grad_norm: 1.0
+gradient_checkpointing: true
+save_steps: 2
+logging_steps: 1
+seed: 0
