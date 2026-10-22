@@ -1,0 +1,216 @@
+"""Bundle the checked-in Python sources into a self-contained Colab notebook.
+
+Run again after editing src/ or tests/. Notebook cells call src/, rather than
+maintaining a second copy of inference logic. No credentials or local results
+are included in the bundle.
+"""
+
+import base64
+import hashlib
+import json
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def cell(kind, text):
+    result = {"cell_type": kind, "id": hashlib.sha256((kind + text).encode()).hexdigest()[:12],
+              "metadata": {}, "source": text.splitlines(keepends=True)}
+    if kind == "code":
+        result.update(execution_count=None, outputs=[])
+    return result
+
+
+def build():
+    paths = sorted((ROOT / "src").glob("*.py")) + sorted((ROOT / "tests").glob("test_*.py"))
+    payload = json.dumps({str(path.relative_to(ROOT)).replace("\\", "/"): path.read_text(encoding="utf-8")
+                          for path in paths}, ensure_ascii=False).encode("utf-8")
+    encoded = base64.b64encode(payload).decode("ascii")
+    digest = hashlib.sha256(payload).hexdigest()
+    cells = [
+        cell("markdown", """# Phase 0 — Quan sát base model trước SFT
+
+Chạy từng cell từ trên xuống. Notebook này **không train**, không chạy test set nghiên cứu và không cần token Hugging Face.
+
+Mục tiêu: xem tokenization, xác suất token tiếp theo, raw completion, phản ứng với ChatML và cách chuẩn bị nhãn SFT.
+**Token không nhất thiết là một từ**: có thể là một phần từ, dấu cách hoặc dấu câu.
+
+CPU runtime đủ cho lần thử ngắn; GPU là tùy chọn. Mã inference nằm trong `src/`, được đóng gói từ repo khi tạo notebook này.
+Kết quả chỉ nằm trong runtime Colab cho đến khi tải xuống. Notebook chưa lưu trên Drive thì chọn **Copy to Drive** nếu muốn giữ lại các thay đổi.
+"""),
+        cell("markdown", "## 1. Cài thư viện\nCell này dùng torch có sẵn của Colab, chỉ cài các thư viện inference còn lại."),
+        cell("code", "%pip install -q transformers==5.20.2 huggingface-hub==1.32.0 psutil==7.2.2 safetensors==0.8.0\n"),
+        cell("markdown", "## 2. Nạp mã nguồn của dự án\nBundle bên dưới chỉ gồm `src/*.py` và các test offline; không có dữ liệu cá nhân hay thông tin đăng nhập. Sửa logic tại repo rồi chạy lại `python scripts/build_playground_notebook.py` để cập nhật notebook."),
+        cell("code", f'''import base64, hashlib, json, os, sys
+from pathlib import Path
+
+payload = base64.b64decode("{encoded}")
+assert hashlib.sha256(payload).hexdigest() == "{digest}"
+root = Path("/content/sft-base-playground")
+root.mkdir(parents=True, exist_ok=True)
+for relative, source in json.loads(payload).items():
+    target = root / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(source, encoding="utf-8")
+os.chdir(root)
+sys.path.insert(0, str(root))
+# Các object đã tạo (như lab) vẫn giữ nguyên; lần import tiếp dùng source mới.
+for module_name in list(sys.modules):
+    if module_name == "src" or module_name.startswith("src."):
+        del sys.modules[module_name]
+print("Source bundle SHA-256:", "{digest}")
+print("Working directory:", root)
+'''),
+        cell("markdown", "## 3. Kiểm tra mã trước khi tải model\nBao gồm test offline và integration test trên một Llama ngẫu nhiên cực nhỏ. Model nhỏ này chỉ kiểm tra code, không đo năng lực SmolLM2."),
+        cell("code", '''import subprocess
+checks = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"], capture_output=True, text=True)
+print(checks.stdout)
+print(checks.stderr)
+checks.check_returncode()
+'''),
+        cell("markdown", "## 4. Tải base model một lần\nDùng `auto`: có CUDA thì chạy GPU, còn lại CPU. Không cập nhật trọng số. Cell in revision chính xác để lần sau có thể tải lại đúng bản."),
+        cell("code", '''import importlib, psutil, torch
+import src.playground
+importlib.reload(src.playground)  # Nạp lại nếu đã chạy lại cell source bundle.
+from src.playground import load_playground, append_record
+print("Available RAM (GiB):", round(psutil.virtual_memory().available / 1024**3, 2))
+print("CUDA:", torch.cuda.is_available())
+lab = load_playground(device="auto")
+print(json.dumps(lab.metadata, indent=2))
+'''),
+        cell("markdown", "## 5. Sửa prompt ở đây\n`raw`: dự đoán phần văn bản nối tiếp. `chat`: bọc prompt bằng ChatML và tool policy trong PLAN. Base chưa SFT có thể không hành xử như chatbot. Mỗi lần thử độc lập, không tự giữ lịch sử hội thoại."),
+        cell("code", '''PROMPT = "The capital of France is"
+MODE = "raw"  # "raw" hoặc "chat"
+MAX_NEW_TOKENS = 32  # Đặt 1 nếu chỉ muốn model sinh đúng một token.
+TOOLS = []  # Có thể điền schema khi thử MODE = "chat".
+
+from src.chat_format import render_chat
+print("Model receives:\\n", PROMPT if MODE == "raw" else render_chat(PROMPT, TOOLS))
+'''),
+        cell("markdown", "## 6. Xem input token và top 10 token tiếp theo\nXác suất được tính trên **toàn bộ vocabulary**. Tổng top 10 thường nhỏ hơn 100%; đây không phải xác suất model trả lời đúng."),
+        cell("code", '''rendered = PROMPT if MODE == "raw" else render_chat(PROMPT, TOOLS)
+ids = lab.tokenizer.encode(rendered, add_special_tokens=False)
+print("Input token count:", len(ids))
+for token_id in ids[:30]:
+    print(token_id, repr(lab.tokenizer.decode([token_id], skip_special_tokens=False)))
+print("..." if len(ids) > 30 else "")
+candidates = lab.next_tokens(PROMPT, mode=MODE, top_k=10, tools=TOOLS)
+print("\\nNext-token candidates:")
+for row in candidates:
+    print(f"{row['token_id']:>6}  {row['probability']:>9.3%}  {row['token']!r}")
+print("Total top-10 probability:", sum(row["probability"] for row in candidates))
+'''),
+        cell("markdown", "## 7. Sinh tiếp và ghi phép đo\nGreedy chọn token có xác suất cao nhất ở mỗi bước. Giữ special token trong output để quan sát cách dừng. Thời gian sinh không gồm thời gian tải model; tốc độ có gồm bước xử lý prompt nên phụ thuộc độ dài prompt và môi trường."),
+        cell("code", '''record = lab.generate(PROMPT, mode=MODE, max_new_tokens=MAX_NEW_TOKENS, tools=TOOLS)
+record["next_token_candidates"] = lab.next_tokens(PROMPT, mode=MODE, top_k=10, tools=TOOLS)
+append_record("results/exploratory/outputs.jsonl", record)
+print("Completion:\\n", record["completion"])
+print("\\nMeasurements:")
+for key in ("prompt_tokens", "generated_tokens", "stop_reason", "generation_seconds", "tokens_per_second"):
+    print(f"{key}: {record[key]}")
+'''),
+        cell("markdown", """## 8. Thử bằng tay
+
+Sửa cell 5, rồi chạy lại 5–7:
+
+1. `The capital of France is` ở raw mode: quan sát nối tiếp kiến thức quen thuộc.
+2. `1, 2, 3, 4,` ở raw mode: quan sát một chuỗi số.
+3. `Explain why the sky is blue.` ở chat mode: quan sát base trước khi học hội thoại.
+4. Đặt `MAX_NEW_TOKENS = 1`: model chỉ phát ra một token. Top token được hiển thị ở cell 6.
+5. Thử cùng prompt nhiều lần: greedy thường lặp lại kết quả trong cùng môi trường.
+
+Các prompt này là ví dụ khám phá, không phải P/dev/test đã đóng băng. Khi muốn quan sát nhiều token liên tiếp, tăng ngân sách sinh; model sẽ tính lại phân phối tiếp theo sau mỗi token.
+"""),
+        cell("markdown", """## 9. Dữ liệu hội thoại để SFT
+
+Chưa train model. Chọn một ví dụ viết tay: chat, gọi tool rồi trả lời, parallel hoặc hỏi lại khi thiếu thông tin. Kết quả tool được giả lập để xem format; không gọi API thời tiết hay thời gian thật.
+
+Token `input_ids` chứa toàn bộ hội thoại. `labels` chỉ giữ token assistant cần học; các vị trí khác là `-100`. Causal language model sẽ tự shift labels khi tính loss, nên dữ liệu không shift trước.
+"""),
+        cell("code", '''from copy import deepcopy
+from src.sft_data import configure_tokenizer, prepare_messages, render_messages, encode_sft, pad_batch, token_rows
+from src.sft_examples import inspection_examples
+
+# Chỉ copy tokenizer, không copy model và không đổi tokenizer của playground.
+sft_tokenizer = configure_tokenizer(deepcopy(lab.tokenizer))
+examples = inspection_examples()
+for index, item in enumerate(examples):
+    print(index, item["id"])
+EXAMPLE_INDEX = 1  # 0=chat, 1=tool_result, 2=parallel, 3=missing_info
+example = examples[EXAMPLE_INDEX]
+feature = encode_sft(sft_tokenizer, example["turns"], tools=example["tools"])
+print("\\nSelected:", example["id"])
+print(render_messages(prepare_messages(example["turns"], example["tools"])))
+print("Total tokens:", len(feature["input_ids"]))
+print("Assistant tokens to learn:", sum(label != -100 for label in feature["labels"]))
+'''),
+        cell("markdown", """## 10. Xem loss mask quanh lượt assistant
+
+`LEARN`: token có tham gia loss. `CONTEXT`: token vẫn có trong input, label là `-100`. Mặc định hiển thị vùng bắt đầu của câu trả lời; đổi `START` / `STOP` để xem vùng khác. Bảng cuối liệt kê mọi `<|im_end|>` để kiểm tra chỉ token kết thúc lượt assistant được học.
+"""),
+        cell("code", '''rows = token_rows(sft_tokenizer, feature)
+first_learn = next(row["position"] for row in rows if row["learn"])
+START = max(0, first_learn - 8)
+STOP = min(len(rows), first_learn + 50)
+print("position  label  kind     token")
+for row in rows[START:STOP]:
+    kind = "LEARN" if row["learn"] else "CONTEXT"
+    print(f"{row['position']:>8} {row['label']:>6} {kind:<7} {row['token']}")
+print("\\nAll im_end positions:")
+for row in rows:
+    if row["token_id"] == sft_tokenizer.eos_token_id:
+        print(row["position"], "LEARN" if row["learn"] else "CONTEXT")
+learned_ids = [label for label in feature["labels"] if label != -100]
+print("\\nSupervised content only:\\n", sft_tokenizer.decode(learned_ids, skip_special_tokens=False))
+'''),
+        cell("markdown", """## 11. Ghép batch và padding
+
+Các mẫu có độ dài khác nhau được pad bên phải bằng `<|endoftext|>` có sẵn. Vị trí pad có attention mask 0 và label `-100`. Việc mask dựa vào vị trí padding, không xóa mọi token có cùng ID. Mẫu vượt 1024 token bị từ chối nguyên mẫu, không cắt bớt.
+"""),
+        cell("code", '''features = [encode_sft(sft_tokenizer, item["turns"], tools=item["tools"]) for item in examples]
+batch = pad_batch(features, pad_token_id=sft_tokenizer.pad_token_id)
+for index, item in enumerate(examples):
+    print(item["id"], "length=", len(features[index]["input_ids"]),
+          "batch_width=", len(batch["input_ids"][index]),
+          "supervised=", sum(label != -100 for label in batch["labels"][index]))
+    print("  attention tail:", batch["attention_mask"][index][-12:])
+    print("  labels tail:   ", batch["labels"][index][-12:])
+assert all(label == -100 for masks, labels in zip(batch["attention_mask"], batch["labels"])
+           for mask, label in zip(masks, labels) if mask == 0)
+print("Padding check: OK")
+'''),
+        cell("markdown", """## 12. Parser và scorer lời gọi tool
+
+Scorer cấu trúc ban đầu: tên tool, toàn bộ tham số và số lượng lời gọi phải khớp. Parallel được so như multiset: bỏ qua thứ tự nhưng giữ số lần xuất hiện. JSON hỏng bị chấm sai. Đây là hợp đồng chấm của bản triển khai này; chưa phải toàn bộ evaluator BFCL hoặc bộ metric nghiên cứu đã khóa.
+"""),
+        cell("code", '''from src.tool_calls import format_tool_calls, parse_tool_calls, score_call_exact
+expected_calls = parse_tool_calls(examples[2]["turns"][1]["content"])
+cases = {
+    "correct": format_tool_calls(expected_calls),
+    "parallel reversed": format_tool_calls(list(reversed(expected_calls))),
+    "missing one call": format_tool_calls(expected_calls[:1]),
+    "extra duplicate": format_tool_calls(expected_calls + expected_calls[:1]),
+    "invalid JSON": "<tool_call>{bad}</tool_call>",
+}
+print("Expected calls:", expected_calls)
+for label, output in cases.items():
+    print(label, "=>", score_call_exact(output, expected_calls))
+'''),
+        cell("markdown", "## 13. Tải log về máy\nRuntime Colab có thể bị xóa khi ngắt phiên. Chạy cell này sau khi thử để giữ lại prompt, output, token ID, revision và các phép đo. Nếu browser không tải file, sao chép các dòng JSON giữa BEGIN_BASE_LOG và END_BASE_LOG vào file `.jsonl`; hai dòng đánh dấu không thuộc dữ liệu."),
+        cell("code", '''print("BEGIN_BASE_LOG\\n" + Path("results/exploratory/outputs.jsonl").read_text(encoding="utf-8") + "END_BASE_LOG")
+from google.colab import files
+files.download("results/exploratory/outputs.jsonl")
+'''),
+    ]
+    notebook = {"cells": cells, "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
+                 "language_info": {"name": "python"}, "colab": {"name": "00_base_playground.ipynb"}},
+                "nbformat": 4, "nbformat_minor": 5}
+    target = ROOT / "notebooks" / "00_base_playground.ipynb"
+    target.parent.mkdir(exist_ok=True)
+    target.write_text(json.dumps(notebook, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    print(f"Built {target} ({len(cells)} cells); source SHA-256 {digest}")
+
+
+if __name__ == "__main__":
+    build()

@@ -1,0 +1,7 @@
+# Install CPU torch separately on local Windows (see README).
+# Colab normally already provides a compatible torch build.
+torch>=2.6,<3
+transformers==5.20.2
+huggingface-hub==1.32.0
+psutil==7.2.2
+safetensors==0.8.0
