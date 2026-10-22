@@ -23,7 +23,8 @@ def cell(kind, text):
 
 
 def build():
-    paths = sorted((ROOT / "src").glob("*.py")) + sorted((ROOT / "tests").glob("test_*.py"))
+    paths = (sorted((ROOT / "src").glob("*.py")) + sorted((ROOT / "configs").glob("*.yaml"))
+             + sorted((ROOT / "tests").glob("test_*.py")))
     payload = json.dumps({str(path.relative_to(ROOT)).replace("\\", "/"): path.read_text(encoding="utf-8")
                           for path in paths}, ensure_ascii=False).encode("utf-8")
     encoded = base64.b64encode(payload).decode("ascii")
@@ -40,8 +41,8 @@ CPU runtime đủ cho lần thử ngắn; GPU là tùy chọn. Mã inference n�
 Kết quả chỉ nằm trong runtime Colab cho đến khi tải xuống. Notebook chưa lưu trên Drive thì chọn **Copy to Drive** nếu muốn giữ lại các thay đổi.
 """),
         cell("markdown", "## 1. Cài thư viện\nCell này dùng torch có sẵn của Colab, chỉ cài các thư viện inference còn lại."),
-        cell("code", "%pip install -q transformers==5.20.2 huggingface-hub==1.32.0 psutil==7.2.2 safetensors==0.8.0\n"),
-        cell("markdown", "## 2. Nạp mã nguồn của dự án\nBundle bên dưới chỉ gồm `src/*.py` và các test offline; không có dữ liệu cá nhân hay thông tin đăng nhập. Sửa logic tại repo rồi chạy lại `python scripts/build_playground_notebook.py` để cập nhật notebook."),
+        cell("code", "%pip install -q transformers==5.20.2 huggingface-hub==1.32.0 psutil==7.2.2 safetensors==0.8.0 pyyaml==6.0.3\n"),
+        cell("markdown", "## 2. Nạp mã nguồn của dự án\nBundle bên dưới chỉ gồm `src/*.py`, `configs/*.yaml` và các test offline; không có dữ liệu cá nhân hay thông tin đăng nhập. Sửa logic tại repo rồi chạy lại `python scripts/build_playground_notebook.py` để cập nhật notebook."),
         cell("code", f'''import base64, hashlib, json, os, sys
 from pathlib import Path
 
@@ -197,7 +198,40 @@ print("Expected calls:", expected_calls)
 for label, output in cases.items():
     print(label, "=>", score_call_exact(output, expected_calls))
 '''),
-        cell("markdown", "## 13. Tải log về máy\nRuntime Colab có thể bị xóa khi ngắt phiên. Chạy cell này sau khi thử để giữ lại prompt, output, token ID, revision và các phép đo. Nếu browser không tải file, sao chép các dòng JSON giữa BEGIN_BASE_LOG và END_BASE_LOG vào file `.jsonl`; hai dòng đánh dấu không thuộc dữ liệu."),
+        cell("markdown", """## 13. So sánh base và các model Instruct
+
+Cùng một bộ prompt khám phá cho base, `SmolLM2-360M-Instruct` và `SmolLM2-1.7B-Instruct` (revision cố định trong `configs/models.yaml`). Mọi model dùng cùng cấu hình dừng `<|im_end|>` / `<|endoftext|>` và cùng ChatML của dự án; SmolLM2-Instruct cũng được train trên ChatML. Mỗi model được nạp, chạy rồi giải phóng trước model tiếp theo.
+
+Đây chưa phải E0: prompt ít và không đóng băng. Đặt `MODELS` ngắn hơn nếu runtime CPU chậm; bản 1.7B trên CPU tốn khoảng 7 GB RAM.
+"""),
+        cell("code", '''import gc
+from src.playground import COMPARISON_PROMPTS, load_playground, run_prompts
+
+MODELS = ["base", "chat_reference", "tool_reference"]
+COMPARE_MAX_NEW_TOKENS = 64
+if "lab" in globals():
+    del lab  # Giải phóng base đã nạp ở mục 4 trước khi nạp model khác.
+gc.collect()
+comparison = []
+for name in MODELS:
+    model_lab = load_playground(name, device="auto")
+    print(f"{name}: {model_lab.metadata['model_id']} @ {model_lab.metadata['model_revision'][:10]} "
+          f"({model_lab.metadata['device']}, load {model_lab.metadata['load_seconds']:.1f}s)")
+    for record in run_prompts(model_lab, COMPARISON_PROMPTS, max_new_tokens=COMPARE_MAX_NEW_TOKENS):
+        append_record("results/exploratory/outputs.jsonl", record)
+        comparison.append(record)
+    del model_lab
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+for prompt in COMPARISON_PROMPTS:
+    print(f"\\n=== {prompt['id']} [{prompt['mode']}]: {prompt['prompt']}")
+    for record in (r for r in comparison if r["prompt_id"] == prompt["id"]):
+        print(f"--- {record['model_name']} | {record['stop_reason']} | {record['generated_tokens']} tokens")
+        print(record["completion"])
+'''),
+        cell("markdown", "## 14. Tải log về máy\nRuntime Colab có thể bị xóa khi ngắt phiên. Chạy cell này sau khi thử để giữ lại prompt, output, token ID, revision và các phép đo. Nếu browser không tải file, sao chép các dòng JSON giữa BEGIN_BASE_LOG và END_BASE_LOG vào file `.jsonl`; hai dòng đánh dấu không thuộc dữ liệu."),
         cell("code", '''print("BEGIN_BASE_LOG\\n" + Path("results/exploratory/outputs.jsonl").read_text(encoding="utf-8") + "END_BASE_LOG")
 from google.colab import files
 files.download("results/exploratory/outputs.jsonl")

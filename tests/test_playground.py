@@ -1,5 +1,6 @@
 """Offline checks for the learning playground; no model download required."""
 
+import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
@@ -51,6 +52,24 @@ class MeasurementTests(unittest.TestCase):
             append_record(target, record)
             rows = [json.loads(row) for row in target.read_text(encoding="utf-8").splitlines()]
             self.assertEqual(rows, [record, record])
+
+
+@unittest.skipUnless(importlib.util.find_spec("yaml"), "Install pyyaml (requirements.txt) to read configs.")
+class ModelConfigTests(unittest.TestCase):
+    def test_config_keys_resolve_to_pinned_commits(self):
+        from src.playground import resolve_model
+        for name in ("base", "chat_reference", "tool_reference"):
+            with self.subTest(name=name):
+                model_id, revision = resolve_model(name)
+                self.assertTrue(model_id.startswith("HuggingFaceTB/SmolLM2-"))
+                self.assertRegex(revision, r"^[0-9a-f]{40}$")
+
+    def test_hub_ids_pass_through_and_unknown_keys_fail(self):
+        from src.playground import resolve_model
+        self.assertEqual(resolve_model("org/model"), ("org/model", "main"))
+        self.assertEqual(resolve_model("base", "abc")[1], "abc")
+        with self.assertRaises(ValueError):
+            resolve_model("instruct")
 
 
 if __name__ == "__main__":

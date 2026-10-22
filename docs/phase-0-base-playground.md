@@ -52,7 +52,7 @@ Hoặc nhập prompt liên tục, giữ model trong RAM:
 .\.venv\Scripts\python -m src.playground --interactive
 ```
 
-Trong chế độ tương tác, `:raw` và `:chat` đổi cách bọc prompt, `:quit` thoát. Mỗi prompt độc lập, không có lịch sử hội thoại tự động. Dùng `--max-new-tokens 1` để chỉ sinh một token; dùng `--revision COMMIT_HASH` để chạy lại đúng bản model đã ghi trong log.
+Trong chế độ tương tác, `:raw` và `:chat` đổi cách bọc prompt, `:quit` thoát. Mỗi prompt độc lập, không có lịch sử hội thoại tự động. Dùng `--max-new-tokens 1` để chỉ sinh một token. `--model` nhận một khóa trong `configs/models.yaml` (`base`, `chat_reference`, `tool_reference`; mặc định `base`) hoặc một Hub id; các khóa này đã ghim revision. Dùng `--revision COMMIT_HASH` để ghi đè revision.
 
 ## Các phép đo
 
@@ -85,4 +85,4 @@ Nếu đã cài torch/transformers, cùng lệnh đó chạy thêm integration t
 
 ## Tiếp tục Phase 0
 
-Các mục 9–12 của notebook minh họa dữ liệu SFT, loss mask, padding và scorer cấu trúc. Xem [hướng dẫn format dữ liệu và loss mask](phase-0-sft-format.md) để hiểu token nào sẽ được học trước khi bắt đầu train. Mục tải log nằm ở cuối notebook, sau các phần kiểm tra dữ liệu.
+Mục 13 chạy cùng một bộ prompt khám phá (`COMPARISON_PROMPTS` trong `src/playground.py`) cho base và hai model Instruct để so cách trả lời và cách dừng. Các mục 9–12 của notebook minh họa dữ liệu SFT, loss mask, padding và scorer cấu trúc. Xem [hướng dẫn format dữ liệu và loss mask](phase-0-sft-format.md) để hiểu token nào sẽ được học trước khi bắt đầu train. Mục tải log nằm ở cuối notebook, sau các phần kiểm tra dữ liệu.

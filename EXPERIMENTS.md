@@ -61,3 +61,19 @@ Server trả `result: true`; đã lấy danh sách công cụ và gọi `get_cel
 **Còn lại trong Phase 0:** baseline Instruct, config train và vòng lặp train ngắn có lưu/resume checkpoint, đếm token và kiểm tra upload. Các mục này chưa được đánh dấu hoàn thành trong PLAN.
 
 **Mốc mã nguồn:** commit `5768945`. Trước khi commit đã bỏ dòng trống dư ở cuối một số file và tạo lại notebook; source bundle local có SHA-256 `34ce17d256a9febae84b33f535c9d5ec6ba16a34d956fc7688407f5b0ee1a7a4`. Hash của bản đã chạy trên Colab ở trên vẫn được giữ để phân biệt snapshot. Các thay đổi này chỉ chuẩn hóa whitespace; kiểm tra local và đối chiếu source nhúng được chạy lại trước commit.
+
+## 2026-10-22 — Phase 0: base và các model Instruct, cùng cấu hình dừng
+
+**Loại hoạt động:** khám phá, chưa phải E0. Sáu prompt tự viết (`COMPARISON_PROMPTS` trong `src/playground.py`), không thuộc P/dev/test.
+
+**Thiết lập:** Colab CPU (khoảng 11,4 GiB RAM trống), fp32, greedy, tối đa 64 token, dừng ở `<|im_end|>` hoặc `<|endoftext|>`. Mọi model dùng cùng ChatML và tool policy của dự án; SmolLM2-Instruct cũng dùng ChatML nên prompt khớp định dạng nó đã học. Revision ghim trong `configs/models.yaml`: base `f8027fd`, 360M-Instruct `a10cc15`, 1.7B-Instruct `31b70e2`. Notebook mục 13, chạy qua Colab MCP; source bundle SHA-256 `2ee3933a5435486d57c956b35591f09dbce66519eb94e5cf559d87048b903ba1`. Trên Colab 26 test qua, 1 test tokenizer được bỏ qua vì chưa cache tokenizer.
+
+**Quan sát:**
+
+- **Cách dừng:** base không dừng ở prompt nào (6/6 hết 64 token). 360M-Instruct dừng bằng `<|im_end|>` ở 4/6 prompt; 1.7B-Instruct dừng ở cả 6. Không model nào dừng bằng `<|endoftext|>`. Cấu hình dừng ở mục 2.4 hoạt động như dự kiến.
+- **Base với ChatML:** lặp lại câu hỏi rồi sinh chuỗi số `1.2.2.2…`, hoặc tự viết thêm `assistant` và lặp lại câu hỏi. Đây là dạng role break mà `role_break_rate` cần bắt; cần kiểm tra trên token ID xem base có sinh đúng `<|im_start|>` không.
+- **360M-Instruct:** trả lời chat đúng; prompt giải thích bị cắt ở 64 token. Với prompt cần tool, nó **bịa** dữ liệu thời tiết dạng JSON thay vì gọi `<tool_call>`, khớp với model card (bản 360M không hỗ trợ function calling).
+- **1.7B-Instruct với format của dự án:** không sinh `<tool_call>`; từ chối vì "không có dữ liệu thời gian thực", và từ chối cả `What is 2 + 2?` khi có tool trong prompt. Như PLAN 2.1 đã ghi, mốc tool của bản này phải đo bằng prompt format riêng của nó.
+- **Raw `The capital of France is`:** cả ba đều bắt đầu bằng ` Paris`; base và 360M-Instruct lặp tới hết ngân sách, 1.7B-Instruct dừng sau 3 token.
+
+**Ý nghĩa cho các bước sau:** base cần SFT để biết dừng và giữ vai trò; 360M-Instruct là mốc chat hợp lý nhưng không phải mốc tool. Trước E0 cần một prompt riêng cho 1.7B theo format function calling của nó.

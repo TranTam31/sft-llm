@@ -7,6 +7,7 @@ This is an exploratory instrument, not the frozen E0 research evaluation.
 import argparse
 import json
 import platform
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
@@ -14,7 +15,20 @@ from time import perf_counter
 from src.chat_format import render_chat
 
 
-DEFAULT_MODEL = "HuggingFaceTB/SmolLM2-360M"
+DEFAULT_MODEL = "base"
+MODELS_CONFIG = Path(__file__).resolve().parents[1] / "configs" / "models.yaml"
+
+
+def resolve_model(name: str, revision: str | None = None) -> tuple[str, str]:
+    """Map a configs/models.yaml key to (Hub id, pinned revision); pass other ids through."""
+    import yaml
+
+    models = yaml.safe_load(MODELS_CONFIG.read_text(encoding="utf-8"))
+    if name in models:
+        return models[name]["id"], revision or models[name]["revision"]
+    if "/" not in name:
+        raise ValueError(f"Unknown model {name!r}; use one of {sorted(models)} or a Hub id.")
+    return name, revision or "main"
 
 
 def validate_request(prompt: str, *, mode="raw", top_k=10, max_new_tokens=64):
@@ -120,7 +134,7 @@ class Playground:
         }
 
 
-def load_playground(*, device="cpu", revision="main"):
+def load_playground(model=DEFAULT_MODEL, *, device="cpu", revision=None):
     """Load original weights. Refuse a CPU load when RAM is clearly too tight."""
     import psutil
     import torch
@@ -144,23 +158,51 @@ def load_playground(*, device="cpu", revision="main"):
     torch.manual_seed(0)
     if device == "cpu":
         torch.set_num_threads(min(4, torch.get_num_threads()))
-    resolved_revision = model_info(DEFAULT_MODEL, revision=revision).sha
+    model_id, revision = resolve_model(model, revision)
+    # A full commit hash is already exact; only branch names need a Hub lookup.
+    resolved_revision = revision if re.fullmatch(r"[0-9a-f]{40}", revision) else model_info(model_id, revision=revision).sha
     if not resolved_revision:
         raise RuntimeError("Could not resolve the model revision to a Hub commit.")
-    tokenizer = AutoTokenizer.from_pretrained(DEFAULT_MODEL, revision=resolved_revision)
+    tokenizer = AutoTokenizer.from_pretrained(model_id, revision=resolved_revision)
     dtype = torch.float16 if device == "cuda" else torch.float32
-    model = AutoModelForCausalLM.from_pretrained(
-        DEFAULT_MODEL, revision=resolved_revision, dtype=dtype,
+    weights = AutoModelForCausalLM.from_pretrained(
+        model_id, revision=resolved_revision, dtype=dtype,
         low_cpu_mem_usage=True, attn_implementation="eager",
     ).to(device)
     metadata = {
-        "model_id": DEFAULT_MODEL, "model_revision": resolved_revision,
+        "model_name": model, "model_id": model_id, "model_revision": resolved_revision,
         "torch_version": torch.__version__, "transformers_version": transformers.__version__,
         "python_version": platform.python_version(), "device": device, "dtype": str(dtype),
-        "parameter_count": sum(parameter.numel() for parameter in model.parameters()),
+        "parameter_count": sum(parameter.numel() for parameter in weights.parameters()),
         "load_seconds": perf_counter() - started, "seed": 0,
     }
-    return Playground(model, tokenizer, metadata)
+    return Playground(weights, tokenizer, metadata)
+
+
+WEATHER_TOOL = {"name": "get_weather", "description": "Get the current weather in a city.",
+                "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}
+
+# Exploratory side-by-side prompts for base vs Instruct; not the frozen P/dev/test sets.
+COMPARISON_PROMPTS = [
+    {"id": "raw_fact", "mode": "raw", "prompt": "The capital of France is"},
+    {"id": "chat_fact", "mode": "chat", "prompt": "What is the capital of France?"},
+    {"id": "chat_explain", "mode": "chat", "prompt": "Explain why the sky is blue in one sentence."},
+    {"id": "tool_needed", "mode": "chat", "prompt": "What is the weather in Hanoi right now?", "tools": [WEATHER_TOOL]},
+    {"id": "tool_not_needed", "mode": "chat", "prompt": "What is 2 + 2?", "tools": [WEATHER_TOOL]},
+    {"id": "tool_missing_arg", "mode": "chat", "prompt": "What is the weather right now?", "tools": [WEATHER_TOOL]},
+]
+
+
+def run_prompts(lab, prompts, *, max_new_tokens=64, top_k=5):
+    """Run one fixed prompt set on a loaded model; each record keeps its prompt id."""
+    records = []
+    for item in prompts:
+        tools = item.get("tools")
+        record = lab.generate(item["prompt"], mode=item["mode"], max_new_tokens=max_new_tokens, tools=tools)
+        record["prompt_id"] = item["id"]
+        record["next_token_candidates"] = lab.next_tokens(item["prompt"], mode=item["mode"], top_k=top_k, tools=tools)
+        records.append(record)
+    return records
 
 
 def main():
@@ -169,7 +211,9 @@ def main():
     parser.add_argument("--interactive", action="store_true")
     parser.add_argument("--mode", choices=["raw", "chat"], default="raw")
     parser.add_argument("--device", choices=["cpu", "cuda", "auto"], default="cpu")
-    parser.add_argument("--revision", default="main")
+    parser.add_argument("--model", default=DEFAULT_MODEL,
+                        help="configs/models.yaml key (base, chat_reference, tool_reference) or a Hub id.")
+    parser.add_argument("--revision", help="Override the pinned revision.")
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument("--max-new-tokens", type=int, default=64)
     parser.add_argument("--output", default="results/exploratory/outputs.jsonl")
@@ -178,7 +222,7 @@ def main():
         parser.error("Pass --prompt or --interactive.")
     validate_request(args.prompt or "interactive", mode=args.mode, top_k=args.top_k,
                      max_new_tokens=args.max_new_tokens)
-    lab = load_playground(device=args.device, revision=args.revision)
+    lab = load_playground(args.model, device=args.device, revision=args.revision)
     print(json.dumps(lab.metadata, indent=2))
     mode = args.mode
     if args.interactive:

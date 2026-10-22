@@ -45,6 +45,16 @@ class ModelIntegrationTests(unittest.TestCase):
         self.assertFalse(record["truncated"])
         self.assertGreater(record["tokens_per_second"], 0)
 
+    def test_prompt_set_records_keep_ids_and_stop_reasons(self):
+        from src.playground import run_prompts
+        prompts = [{"id": "raw", "mode": "raw", "prompt": "Hello"},
+                   {"id": "chat", "mode": "chat", "prompt": "Hello world", "tools": []}]
+        records = run_prompts(self.lab, prompts, max_new_tokens=2, top_k=2)
+        self.assertEqual([record["prompt_id"] for record in records], ["raw", "chat"])
+        self.assertEqual([record["mode"] for record in records], ["raw", "chat"])
+        self.assertTrue(all(record["stop_reason"] == "endoftext" for record in records))
+        self.assertTrue(all(len(record["next_token_candidates"]) == 2 for record in records))
+
     def test_long_prompt_is_rejected_without_truncation(self):
         with self.assertRaisesRegex(ValueError, "768"):
             self.lab.next_tokens("Hello " * 769)

@@ -149,6 +149,8 @@ def call(name, arguments, timeout):
     request_id = f"{time.time_ns()}"
     request = WORK / "req" / f"{request_id}.json"
     response = WORK / "res" / f"{request_id}.json"
+    if arguments.startswith("@"):  # Large payloads (cell sources) exceed the Windows command-line limit.
+        arguments = Path(arguments[1:]).read_text(encoding="utf-8")
     request.write_text(json.dumps({"name": name, "arguments": json.loads(arguments)}), encoding="utf-8")
     deadline = time.time() + timeout
     while not response.exists():
@@ -168,7 +170,7 @@ def main():
     commands.add_parser("url")
     call_parser = commands.add_parser("call")
     call_parser.add_argument("name", help="Tool name, list_tools, or quit.")
-    call_parser.add_argument("arguments", nargs="?", default="{}", help="Tool arguments as JSON.")
+    call_parser.add_argument("arguments", nargs="?", default="{}", help="Tool arguments as JSON, or @file.json.")
     call_parser.add_argument("--timeout", type=float, default=600)
     args = parser.parse_args()
     if args.command == "serve":

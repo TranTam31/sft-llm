@@ -1,0 +1,10 @@
+# Models from PLAN 2.1, pinned to Hub commits so every run loads the same weights.
+base:
+  id: HuggingFaceTB/SmolLM2-360M
+  revision: f8027fd0eaeea54caa13c31d31b9fdc459c38b49
+chat_reference:
+  id: HuggingFaceTB/SmolLM2-360M-Instruct
+  revision: a10cc1512eabd3dde888204e902eca88bddb4951
+tool_reference:
+  id: HuggingFaceTB/SmolLM2-1.7B-Instruct
+  revision: 31b70e2e869a7173562077fd711b654946d38674
