@@ -6,4 +6,5 @@ __pycache__/
 results/
 data/raw/
 data/processed/
+data/split/
 .env

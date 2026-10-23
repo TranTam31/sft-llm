@@ -27,7 +27,7 @@ def cell(kind, text):
 
 
 def source_bundle():
-    paths = (sorted((ROOT / "src").glob("*.py")) + sorted((ROOT / "configs").glob("*.yaml"))
+    paths = (sorted((ROOT / "src").rglob("*.py")) + sorted((ROOT / "configs").glob("*.yaml"))
              + sorted((ROOT / "tests").glob("test_*.py")))
     payload = json.dumps({str(path.relative_to(ROOT)).replace("\\", "/"): path.read_text(encoding="utf-8")
                           for path in paths}, ensure_ascii=False).encode("utf-8")
@@ -346,6 +346,51 @@ print({key: metrics[key] for key in ("global_step", "assistant_tokens_seen", "tr
     write_notebook("01_train_smoke.ipynb", cells, digest)
 
 
+HF_LOGIN_MD = """## 4. Đăng nhập HF Hub
+
+Cần secret `HF_TOKEN` trong 🔑 **Secrets** của Colab, đã bật **Notebook access**. Chạy cell này **bằng nút ▶ trên giao diện Colab**: secret không đọc được khi cell được chạy qua MCP.
+"""
+
+
+def build_data():
+    encoded, digest = source_bundle()
+    cells = [
+        cell("markdown", """# Phase 1 — Dữ liệu
+
+Tải xLAM-60k, Glaive và các subset SmolTalk theo revision trong `configs/data.yaml`, chuyển về định dạng chung, loại mẫu quá `max_seq_len` (không cắt), rồi ghi `data/processed/*.jsonl` và `data/REPORT.md`. Sau đó tách seen/unseen theo nhóm chức năng và khử trùng lặp (`data/split/`, `data/SPLIT.md`). Dữ liệu được đẩy lên một dataset **private** trên HF Hub.
+
+xLAM bị gated: tài khoản HF phải đồng ý điều khoản trên trang dataset trước. CPU runtime là đủ.
+"""),
+        cell("markdown", "## 1. Cài thư viện"),
+        cell("code", install_code(INFERENCE_PINS + [("datasets", "5.1.0")])),
+        cell("markdown", "## 2. Nạp mã nguồn của dự án"),
+        cell("code", bundle_code(encoded, digest)),
+        cell("markdown", "## 3. Kiểm tra mã"),
+        cell("code", TESTS_CODE),
+        cell("markdown", HF_LOGIN_MD + "\nĐiền `DATASET_REPO` dạng `<username>/<tên repo>`."),
+        cell("code", '''from google.colab import userdata
+from huggingface_hub import whoami
+
+os.environ["HF_TOKEN"] = userdata.get("HF_TOKEN")
+DATASET_REPO = ""  # ví dụ "your-username/sft-capability-data"
+print("Logged in as:", whoami()["name"])
+assert DATASET_REPO, "Điền DATASET_REPO trước khi chạy tiếp."
+'''),
+        cell("markdown", "## 5. Tải, chuyển đổi, lọc độ dài và đẩy lên Hub\nKhoảng 10–15 phút; log tiến độ hiện ngay trong lúc chạy."),
+        cell("code", '!python -m src.data.build --config configs/data.yaml --push-to {DATASET_REPO}\n'),
+        cell("markdown", "## 6. Báo cáo\nSao chép nội dung này vào `data/REPORT.md` trong repo."),
+        cell("code", 'print(Path("data/REPORT.md").read_text(encoding="utf-8"))\n'),
+        cell("markdown", """## 7. Phân cụm tool, tách seen/unseen, khử trùng lặp
+
+Embed mọi tool, phân thành nhóm chức năng, chọn khoảng 15% số cụm làm unseen, giữ lại các pool eval rồi bỏ khỏi train mọi mẫu trùng hoặc gần trùng với eval (PLAN 4.2, 4.5). Nếu runtime đã mất `data/processed`, dữ liệu được tải lại từ `DATASET_REPO`. Kết quả đẩy lên thư mục `split/` của dataset."""),
+        cell("code", '!python -m src.data.split --config configs/data.yaml --from-hub {DATASET_REPO} --push-to {DATASET_REPO}\n'),
+        cell("markdown", "## 8. Báo cáo tách\nSao chép nội dung này vào `data/SPLIT.md` trong repo."),
+        cell("code", 'print(Path("data/SPLIT.md").read_text(encoding="utf-8"))\n'),
+    ]
+    write_notebook("02_data.ipynb", cells, digest)
+
+
 if __name__ == "__main__":
     build()
     build_train_smoke()
+    build_data()

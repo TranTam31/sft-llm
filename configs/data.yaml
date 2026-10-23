@@ -1,0 +1,82 @@
+# PLAN 4.1 sources, pinned to Hub commits. Output: data/processed/*.jsonl + data/REPORT.md.
+seed: 0
+max_seq_len: 1024              # PLAN 2.5: measured after rendering; longer examples are dropped
+tokenizer_model: base          # configs/models.yaml key
+output_dir: data/processed
+# Decisions rendered into data/REPORT.md.
+notes:
+  - "Giữ `max_seq_len` 1024 dù smol-magpie-ultra mất khoảng 89% vì độ dài: dữ liệu tool có p95 dưới 1024. Phần magpie còn lại lệch về hội thoại ngắn, nên chỉ lấy 2000 mẫu để giới hạn ảnh hưởng của độ lệch này lên D_chat."
+  - "System prompt riêng của SmolTalk (smol-rewrite, smol-summarize…) được gộp vào đầu lượt user đầu tiên; system prompt cố định của PLAN 2.3 giữ nguyên."
+
+xlam:
+  repo: Salesforce/xlam-function-calling-60k   # gated: accept the terms on the Hub first
+  revision: 26d14ebfe18b1f7b524bd39b404b50af5dc97866
+  file: xlam_function_calling_60k.json
+
+glaive:
+  repo: glaiveai/glaive-function-calling-v2
+  revision: e7f4b6456019f5d8bcb991ef0dd67d8ff23221ac
+  file: glaive-function-calling-v2.json
+
+smoltalk:
+  repo: HuggingFaceTB/smoltalk
+  revision: 5feaf2fd3ffca7c237fc38d1861bc30365d48ffa
+  # Candidate pool per subset (examples kept after filtering), drawn at random with the seed.
+  # The pool is larger than N_chat (~10k, fixed after the pilot) to leave room for eval splits.
+  subsets:
+    everyday-conversations: 2000
+    smol-magpie-ultra: 2000          # first train shard only; ~89% is over max_seq_len, the rest skews short
+    smol-constraints: 1500
+    smol-rewrite: 1500
+    smol-summarize: 1500
+    explore-instruct-rewriting: 1000
+    openhermes-100k: 3000
+    metamathqa-50k: 1500
+    numina-cot-100k: 1500
+    self-oss-instruct: 1500
+  excluded:
+    apigen-80k: function-calling data from the APIGen pipeline that also produced xLAM
+    systemchats-30k: teaches following custom system prompts, which the fixed system prompt (PLAN 2.3) rules out
+    longalign: long-context data, mostly over max_seq_len
+
+# PLAN 4.2 / 4.5: python -m src.data.split. Output: data/split/*.jsonl + data/SPLIT.md.
+split:
+  output_dir: data/split
+  embedder:
+    id: BAAI/bge-small-en-v1.5
+    revision: 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a
+  n_clusters: 50                 # coarse functional groups (weather, finance, math…)
+  unseen_fraction: 0.15
+  search_trials: 3000
+  min_unseen_per_group: 250      # T-unseen: ~100 test + ~33 dev per group, with room for dedupe and hand review
+  max_tool_loss: 0.30            # share of tool examples that may leave train as unseen or mixed
+  holdout_per_group: 600         # seen tool examples kept out of train for T-seen and P
+  holdout_chat: 1000             # SmolTalk chat kept out of train for C and No-tool prompts
+  merge_threshold: 0.95          # near-identical tools (reworded copies) are forced into one cluster
+  absorb_threshold: 0.92         # seen tools this close to an unseen tool become unseen; 0.91 and below cascade (1.4k+ tools)
+  name_absorb_threshold: 0.85    # same for an alias of an unseen tool (see alias_similarity)
+  alias_similarity: 0.6          # compact names (no _ or case) this close by character trigrams count as aliases
+  leak_threshold: 0.85           # a seen/unseen tool pair this close counts as border leak (search) and is reported
+  leak_weight: 1.0               # border leak vs strata distance in the search score (both mean-normalized)
+  final_checks: 20               # ranked candidates re-checked on the final pools before giving up
+  block_threshold: 0.92          # clusters with centroids this close form one domain, held out whole (sports 4 + 14)
+  min_coherence: 0.6             # blocks below this mean pairwise cosine are catch-alls, never unseen
+  excluded_clusters:             # catch-alls coherence misses; pinned by id and most used tool
+    - {id: 34, top_tool: search, reason: "tạp: nhiều chức năng tìm kiếm khác nhau dính nhau qua chữ search"}
+    - {id: 1, top_tool: analyze_sentiment, reason: "gần tạp: gom theo động từ analyze (sentiment, ảnh, t-test, SEO)"}
+    - {id: 30, top_tool: get_holidays_by_year, reason: "gần tạp: quốc gia, ngày lễ lẫn danh mục, OTT, tab"}
+    - {id: 22, top_tool: video_comments, reason: "miền mạng xã hội trải sang cụm seen 5 và 37 (tweet, post)"}
+    - {id: 38, top_tool: latest_rates, reason: "miền tài chính tách đôi với cụm 12 (giá, lịch sử chứng khoán)"}
+    - {id: 33, top_tool: get_ip_zipcode, reason: "IP/địa lý giáp thời tiết (cụm 28) và khối tạp"}
+  pinned_unseen:                 # domains approved by hand (2026-10-23); the search only adds to these
+    - {id: 46, top_tool: calculate_tip}
+    - {id: 35, top_tool: send_email}
+    - {id: 23, top_tool: is_valid_email}
+    - {id: 7, top_tool: translate_text}
+    - {id: 4, top_tool: matchschedules}
+    - {id: 14, top_tool: fixtures}
+  minhash:
+    num_perm: 128
+    bands: 32
+    ngram: 3
+    threshold: 0.7

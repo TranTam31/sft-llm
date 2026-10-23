@@ -62,7 +62,9 @@ def make_labels(input_ids: list[int], assistant_mask: list[int]) -> list[int]:
 def encode_sft(tokenizer, turns: list[dict], *, tools: list | None = None, max_seq_len=1024) -> dict:
     if max_seq_len < 1:
         raise ValueError("max_seq_len must be positive.")
-    configure_tokenizer(tokenizer)
+    # Reconfiguring costs ~30 ms per call, which dominates bulk encoding; do it once.
+    if tokenizer.chat_template != CHAT_TEMPLATE or tokenizer.eos_token != "<|im_end|>":
+        configure_tokenizer(tokenizer)
     messages = prepare_messages(turns, tools)
     encoded = tokenizer.apply_chat_template(
         messages, tokenize=True, add_generation_prompt=False,

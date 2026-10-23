@@ -276,6 +276,9 @@ Tách theo tên tool là chưa đủ, vì có những tool cùng chức năng nh
 3. Chọn khoảng 15% số cụm làm **unseen**. Chọn sao cho phân phối độ khó tương đương với phần seen: cùng phân phối số tham số, số tool trong danh sách và tỉ lệ các nhóm 1–6.
 4. Loại khỏi tập train **mọi** mẫu có tool thuộc cụm unseen, **kể cả khi tool đó chỉ nằm trong danh sách được cung cấp mà không được gọi**.
 5. Khi so sánh seen và unseen, báo cáo thêm kết quả sau khi **khớp theo độ khó** (stratify theo số tham số và số tool trong danh sách), để tách riêng ảnh hưởng của độ khó.
+6. Embedding không tách sạch tuyệt đối các tool cùng chủ đề. Vì vậy khi dựng T-unseen từ pool `unseen_eval`, **bỏ mọi mẫu có tool nằm sát một tool seen** (cosine ≥ 0,85, cùng embedder). Bước lọc này chỉ áp dụng cho eval, không lấy thêm dữ liệu của train.
+
+Cách làm thực tế (cụm ghim sau khi duyệt tay, khối cụm, các cụm tạp bị loại, các luật kéo tool sang unseen) và kết quả kiểm tra nằm trong `configs/data.yaml` (mục `split`) và `data/SPLIT.md`.
 
 ### 4.3 Dữ liệu No-tool (cho cả train và eval)
 
@@ -363,15 +366,15 @@ Số lượng cụ thể sẽ chốt sau pilot, dự kiến N_chat ≈ N_tool �
 - [x] Notebook Colab dùng chung code trong `src/` (không viết logic train trong notebook)
 
 ### Giai đoạn 1 — Dữ liệu và bộ eval
-- [ ] Tải và chuyển đổi dữ liệu, áp quy tắc độ dài, ghi `data/REPORT.md`
-- [ ] Phân cụm nhóm chức năng, tách seen/unseen, khử trùng lặp
+- [x] Tải và chuyển đổi dữ liệu, áp quy tắc độ dài, ghi `data/REPORT.md`
+- [x] Phân cụm nhóm chức năng, tách seen/unseen, khử trùng lặp
 - [ ] Tạo T-rename, viết bộ P bằng tay, gán nhãn hoặc rà nhãn cho Missing-info và Multi-turn
 - [ ] Viết các metric ở mục 3.3–3.4, test trên output viết tay (có cả đúng lẫn sai), kiểm định LLM judge
 - [ ] Cài BFCL và `lm-evaluation-harness`, chạy được trên một model Instruct
 - [ ] **Đóng băng** dev/test: ghi hash vào `eval_sets/MANIFEST.md`
 
 ### Giai đoạn 2 — Pilot (E0 + E2 ngắn, **chỉ dùng dev**)
-Mục đích: kiểm tra hạ tầng và kiểm tra **scorer chấm đúng**, **chưa** để kết luận. Pilot không đặt yêu cầu nào về kết quả học: một pilot ngắn không cải thiện gì cũng là kết quả hợp lệ, và không phải lý do để sửa metric.
+Mục đích: kiểm tra hạ tầng và kiểm tra **scorer chấm đúng**, **chưa** để kết luận. Pilot không đặt yêu cầu nào về kết quả học: một pilot ngắn không cải thiện gì cũng là kết quả hợp lệ, và không phải lý do để sửa metric. Ngoại lệ duy nhất là **tiêu chí đi/dừng về độ đủ mạnh của model** dưới đây, chốt từ trước pilot: nó chỉ quyết định dùng model nào, không bao giờ dùng để sửa metric hay ngưỡng.
 - [ ] Eval E0 trên dev (base zero-shot / few-shot, các model Instruct)
 - [ ] Chạy E2 với khoảng 10% dữ liệu, 1 seed, eval dev ở các checkpoint
 - [ ] Đo: thời gian train mỗi 1k mẫu, thời gian eval mỗi checkpoint, bộ nhớ GPU
@@ -379,6 +382,14 @@ Mục đích: kiểm tra hạ tầng và kiểm tra **scorer chấm đúng**, **
 - [ ] **Kiểm tra độ nhạy của scorer** bằng một bộ output **dựng có chủ đích** cho từng nhóm: output đúng, và output mắc từng lỗi đã biết (sai tên tool, thiếu hoặc thừa tham số, sai kiểu dữ liệu, JSON hỏng, gọi tool khi không cần, hỏi lại sai tham số, trả lời phủ định giá trị đúng…). Mỗi lỗi phải bị chấm sai, mỗi output đúng phải được chấm đúng.
 - [ ] Rà bằng tay khoảng 50 output thật của pilot, so điểm của scorer với điểm chấm tay
 - [ ] Kiểm tra resume (mục 5.3)
+- [ ] **Tiêu chí đi/dừng cho model** (chỉ dùng dev, đọc ở checkpoint cuối của pilot E2, so với base zero-shot):
+  - **(a) Lõi:** `format_valid` và `call_exact` của nhóm Single trên T-seen đều tăng ≥ 0.2, cận dưới CI của hiệu số > 0.
+  - **(b) Nhóm khó:** ít nhất một trong `call_exact` T-unseen (Single), `clarify_correct`, `grounded_correct` có cận dưới CI của hiệu số > 0.
+  - **Đạt (a) và (b):** giữ SmolLM2-360M.
+  - **Đạt (a), không đạt (b):** giữ 360M, nhưng đánh dấu RQ3 và các kỹ năng khó là **"nguy cơ sàn"**; chạy thêm một pilot ngắn với phương án dự phòng 1 để so trước khi khóa giao thức.
+  - **Không đạt (a):** trước hết tìm lỗi hạ tầng (mask, template, cấu hình dừng, parser). Chỉ khi hạ tầng đã đúng mà vẫn không đạt thì đổi model.
+  - **Phương án dự phòng:** (1) SmolLM2-1.7B base với LoRA: giữ nguyên tokenizer, ChatML và pipeline; full fine-tune 1.7B không vừa T4 (trọng số + Adam ≈ 27 GB) nên RQ6 cần GPU lớn hơn hoặc bị thu hẹp. (2) Một base model khác cỡ ~0.5B: phải kiểm tra lại tokenizer, token dừng và chạy lại các kiểm tra Phase 0.
+  - Đổi model thì chạy lại E0 và pilot trên model mới, ghi quyết định và lý do vào `EXPERIMENTS.md` trước khi khóa giao thức.
 - [ ] Chốt N_chat, N_tool, lr, lịch checkpoint, các ngưỡng ở mục 3.5
 - [ ] **Khóa giao thức:** ghi toàn bộ quyết định vào `EXPERIMENTS.md` kèm ngày và commit hash. Chỉ từ thời điểm này mới được chạy test.
 
@@ -464,3 +475,4 @@ tests/                  unit test cho format, mask, parser, scorer
 | Eval quá lâu | Đo ở pilot. Nếu vượt, giảm số checkpoint chạy test đầy đủ, không giảm cỡ mẫu. |
 | fp16 không ổn định (loss NaN) | Giảm lr, grad clip 1.0, trọng số master ở fp32 |
 | Phạm vi phình to | Giai đoạn 4 là tùy chọn. Hoàn thành E0–E3 trước. |
+| Model quá yếu: metric nằm sát đáy ở mọi checkpoint (floor effect), nhất là T-unseen, Missing-info, Multi-turn | Tiêu chí đi/dừng chốt trước pilot (Giai đoạn 2), chỉ dùng dev; phương án dự phòng SmolLM2-1.7B + LoRA hoặc base ~0.5B khác. Kỹ năng vẫn sát đáy ở thí nghiệm chính được báo cáo là "không phân giải được ở cỡ model này", không phải "không học được". |

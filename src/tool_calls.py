@@ -14,7 +14,7 @@ class ToolCallParseError(ValueError):
     pass
 
 
-def _canonical(value):
+def canonical(value):
     if value is None:
         return ("null",)
     if isinstance(value, bool):
@@ -29,18 +29,18 @@ def _canonical(value):
             raise ToolCallParseError("Non-finite JSON number.")
         return ("number", number)
     if isinstance(value, list):
-        return ("array", tuple(_canonical(item) for item in value))
+        return ("array", tuple(canonical(item) for item in value))
     if isinstance(value, dict) and all(isinstance(key, str) for key in value):
-        return ("object", tuple(sorted((key, _canonical(item)) for key, item in value.items())))
+        return ("object", tuple(sorted((key, canonical(item)) for key, item in value.items())))
     raise ToolCallParseError("Value is not a JSON-compatible value.")
 
 
-def _validate_call(call):
+def validate_call(call):
     if not isinstance(call, dict) or set(call) != {"name", "arguments"}:
         raise ToolCallParseError("A call must contain exactly name and arguments.")
     if not isinstance(call["name"], str) or not call["name"].strip() or not isinstance(call["arguments"], dict):
         raise ToolCallParseError("name must be non-empty text; arguments must be an object.")
-    _canonical(call)
+    canonical(call)
 
 
 def _unique_object(pairs):
@@ -56,9 +56,14 @@ def _reject_constant(value):
     raise ToolCallParseError(f"Invalid JSON constant: {value}")
 
 
+def json_decoder():
+    """Strict JSON: duplicate keys and NaN/Infinity are errors; decimals stay exact."""
+    return json.JSONDecoder(object_pairs_hook=_unique_object, parse_float=Decimal, parse_constant=_reject_constant)
+
+
 def format_tool_calls(calls: list[dict]) -> str:
     for call in calls:
-        _validate_call(call)
+        validate_call(call)
     return "\n".join("<tool_call>\n" + json.dumps(call, ensure_ascii=False, allow_nan=False) + "\n</tool_call>" for call in calls)
 
 
@@ -68,7 +73,7 @@ def format_tool_responses(responses: list[dict]) -> str:
             raise ValueError("A tool response must contain name and content.")
         if not isinstance(response["name"], str) or not response["name"].strip():
             raise ValueError("A tool response must have a non-empty name.")
-        _canonical(response)
+        canonical(response)
     return "\n".join("<tool_response>\n" + json.dumps(response, ensure_ascii=False, allow_nan=False) + "\n</tool_response>" for response in responses)
 
 
@@ -80,7 +85,7 @@ def parse_tool_calls(text: str) -> list[dict]:
             break
     if "<tool_call" not in body and "</tool_call" not in body:
         return []
-    decoder = json.JSONDecoder(object_pairs_hook=_unique_object, parse_float=Decimal, parse_constant=_reject_constant)
+    decoder = json_decoder()
     calls = []
     while body:
         if not body.startswith("<tool_call>"):
@@ -90,7 +95,7 @@ def parse_tool_calls(text: str) -> list[dict]:
             call, end = decoder.raw_decode(payload)
         except (ValueError, json.JSONDecodeError) as error:
             raise ToolCallParseError(str(error)) from error
-        _validate_call(call)
+        validate_call(call)
         remainder = payload[end:].lstrip()
         if not remainder.startswith("</tool_call>"):
             raise ToolCallParseError("Missing closing tool_call tag.")
@@ -101,9 +106,9 @@ def parse_tool_calls(text: str) -> list[dict]:
 
 def score_call_exact(output: str, expected: list[dict]) -> bool:
     for call in expected:
-        _validate_call(call)
+        validate_call(call)
     try:
         predicted = parse_tool_calls(output)
     except ToolCallParseError:
         return False
-    return Counter(_canonical(call) for call in predicted) == Counter(_canonical(call) for call in expected)
+    return Counter(canonical(call) for call in predicted) == Counter(canonical(call) for call in expected)
