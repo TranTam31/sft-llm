@@ -80,3 +80,16 @@ split:
     bands: 32
     ngram: 3
     threshold: 0.7
+
+# PLAN 3.1, 3.2, 4.2 (item 6), 4.4: python -m src.eval.build_sets. Output: eval_sets/{test,dev,drafts}/*.jsonl
+# + eval_sets/REPORT.md. Missing-info and Multi-turn use the session labels in eval_sets/labels/ (on the Hub);
+# No-tool and P are not built yet.
+eval_sets:
+  output_dir: eval_sets
+  test_per_group: 100            # PLAN 3.2: ~100 per group in test
+  dev_fraction: 0.3333           # dev has the same structure at about 1/3 the size
+  chat_test: 150                 # C
+  near_seen_threshold: 0.85      # T-unseen drops examples offering an unseen tool this close to a seen tool
+  draft_margin: 2.5              # drafts per group = margin x (test + dev), room for the labelling pass to drop some
+  rewrite_drafts: {t_seen: 160, t_unseen: 100}  # xLAM requests drafted for Missing-info rewrites (Glaive repeats its prompts)
+  multi_turn_extra_drafts: {t_unseen: 3000}  # drawn last; picking stops when the pool runs out of new prompts

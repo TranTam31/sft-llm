@@ -163,6 +163,8 @@ Kích thước dưới đây là cho **test**. Dev có cùng cấu trúc, cỡ k
 
 Nhóm Multi-turn và Missing-info lấy từ Glaive nhưng nhãn phải được viết hoặc rà lại bằng tay, vì đây là hai nhóm khó chấm tự động nhất.
 
+*Quyết định (2026-10-23):* Glaive lặp prompt Missing-info nhiều (phía unseen chỉ khoảng 80 câu khác nhau), nên Missing-info lấy cùng số mẫu Glaive ở hai phía rồi bù bằng câu hỏi xLAM viết lại cho thiếu một tham số bắt buộc, đủ 133 mẫu mỗi phía. Seen và unseen nhờ đó có cùng tỉ lệ nguồn, test và dev giữ tỉ lệ này. Không để seen toàn Glaive còn unseen nửa xLAM, vì khác biệt nguồn sẽ lẫn vào so sánh seen/unseen.
+
 ### 3.3 Metric tự động
 
 Quy ước: **mẫu số luôn là toàn bộ mẫu của nhóm**. Output lỗi hoặc không parse được tính là sai, không bị loại khỏi phép tính.
@@ -181,7 +183,10 @@ Quy ước: **mẫu số luôn là toàn bộ mẫu của nhóm**. Output lỗi 
 - `false_call_rate`: nhóm No-tool, tỉ lệ có gọi tool. `missed_call_rate`: nhóm cần tool, tỉ lệ không gọi gì.
 - **`decision_bacc`**: balanced accuracy của quyết định gọi / không gọi = ½ × (tỉ lệ gọi đúng ở nhóm cần tool + tỉ lệ không gọi ở nhóm No-tool). Một model không bao giờ gọi tool (như base zero-shot) hay luôn gọi tool đều chỉ được 0.5. Đây là metric chính cho kỹ năng "biết khi nào gọi", thay cho việc nhìn riêng `false_call_rate`.
 - `clarify_correct` (nhóm Missing-info): đúng khi thỏa **cả ba**: (a) không gọi tool, (b) có hỏi lại, (c) nhắc đúng `missing_param` hoặc một từ đồng nghĩa trong danh sách. Chấm bằng luật; nếu không chắc chắn thì dùng LLM judge với rubric cố định. Tỉ lệ đồng ý giữa judge và chấm tay được kiểm tra trên 50 mẫu.
-- `grounded_correct` (nhóm Multi-turn): đúng khi câu trả lời chứa đủ các giá trị bắt buộc, không chứa giá trị cấm, và không phủ định giá trị đúng. Chấm bằng luật kết hợp LLM judge theo rubric, kiểm định trên 50 mẫu như trên.
+- `grounded_correct` (nhóm Multi-turn): đúng khi câu trả lời chứa đủ các giá trị bắt buộc, không chứa giá trị cấm, và không phủ định giá trị đúng. Chấm bằng luật kết hợp LLM judge theo rubric, kiểm định trên 50 mẫu như trên. Báo thêm điểm phụ chỉ trên các mẫu `meta.derivable = false`, tức các mẫu mà đáp án không tự tính được từ câu hỏi (xem quyết định dưới đây).
+- *Quyết định (2026-10-23):* tool unseen của Glaive phần lớn là tính toán (tip, giảm giá, GCD, Fibonacci…), nên đa số mẫu Multi-turn unseen tự tính được mà không cần đọc kết quả tool. Hai phía nhắm cùng một tỉ lệ: số mẫu cần đọc kết quả tool bằng mức phía unseen có, phần còn lại là mẫu tự tính được. Nếu một phía không đủ mẫu tự tính được thì bù bằng mẫu cần đọc kết quả tool. Bản hiện tại: seen có 88 mẫu tự tính được trên 133, unseen có 99 trên 133 (nháp seen đã vét hết pool). Điểm phụ trên phần cần đọc kết quả tool mới là thước đo grounding thật; phần này ít mẫu nên khoảng tin cậy rộng. Đã cân nhắc đặt trần 25% mẫu tự tính được nhưng không khả thi: cả pool unseen chỉ có khoảng 87 prompt khác nhau loại cần đọc kết quả tool mà có giá trị chấm được.
+- Luật `grounded_correct` chưa xử lý câu phủ định. Phải kiểm luật này (hoặc judge) ở bước scorer trước khi dùng điểm Multi-turn để kết luận năng lực.
+- *Lựa chọn LLM (2026-10-23):* các việc cần LLM khi dựng dữ liệu (lọc prompt No-tool, kiểm tool không phù hợp, tên đồng nghĩa cho T-rename, nhãn Missing-info/Multi-turn) do session agent gán nhãn một lần, không dùng model hay API nào khác. Vì không có judge chạy lại tự động theo checkpoint, `clarify_correct` và `grounded_correct` dựa vào luật; nhãn phải đủ chặt để luật chấm được (danh sách từ đồng nghĩa, giá trị cấm). Nếu luật không đủ, phần judge được bàn lại ở bước 5.
 
 **Chat**
 - `stop_rate`, `role_break_rate`, `avg_len`.

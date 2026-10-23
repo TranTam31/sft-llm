@@ -386,6 +386,12 @@ Embed mọi tool, phân thành nhóm chức năng, chọn khoảng 15% số cụ
         cell("code", '!python -m src.data.split --config configs/data.yaml --from-hub {DATASET_REPO} --push-to {DATASET_REPO}\n'),
         cell("markdown", "## 8. Báo cáo tách\nSao chép nội dung này vào `data/SPLIT.md` trong repo."),
         cell("code", 'print(Path("data/SPLIT.md").read_text(encoding="utf-8"))\n'),
+        cell("markdown", """## 9. Dựng các bộ eval chấm bằng luật
+
+T-seen, T-unseen (bỏ mẫu có tool sát tool seen), T-rename mức tên vô nghĩa và C, chia dev/test; kèm nháp nhãn Missing-info và Multi-turn (PLAN 3.2, 4.2, 4.4). Nếu runtime đã mất `data/split`, dữ liệu được tải lại từ `DATASET_REPO`. Kết quả đẩy lên thư mục `eval_sets/` của dataset."""),
+        cell("code", '!python -m src.eval.build_sets --config configs/data.yaml --from-hub {DATASET_REPO} --push-to {DATASET_REPO}\n'),
+        cell("markdown", "## 10. Báo cáo bộ eval\nSao chép nội dung này vào `eval_sets/REPORT.md` trong repo."),
+        cell("code", 'print(Path("eval_sets/REPORT.md").read_text(encoding="utf-8"))\n'),
     ]
     write_notebook("02_data.ipynb", cells, digest)
 

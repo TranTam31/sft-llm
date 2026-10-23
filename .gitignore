@@ -8,3 +8,7 @@ data/raw/
 data/processed/
 data/split/
 .env
+eval_sets/test/
+eval_sets/dev/
+eval_sets/drafts/
+eval_sets/labels/
