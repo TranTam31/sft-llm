@@ -299,6 +299,14 @@ Nếu chỉ ghép prompt chat với tool ngẫu nhiên rồi giữ nguyên đáp
 
 Ca khó (3b) được tính vào nhóm No-tool khi chấm (đúng = không gọi tool). Tỉ lệ nói đúng là "không có tool phù hợp" được báo cáo thêm như một metric phụ.
 
+*Bộ eval (2026-10-23):* mỗi phía T-seen/T-unseen có 133 mẫu No-tool, gồm 89 `plain`, 22 `related` (3a) và 22 `no_fitting_tool` (3b). Test và dev giữ tỉ lệ này. Tool đưa ra luôn lấy từ pool eval của đúng phía, và mỗi tên tool chỉ xuất hiện một lần trong một mẫu.
+- **Prompt:** lấy từ chat SmolTalk giữ riêng, chỉ dùng lượt đầu. Session rà cả 800 prompt, giữ 704. Prompt bị bỏ là loại cần dữ liệu theo thời gian, dữ liệu cá nhân, thiếu ngữ cảnh, hoặc chỉ là câu chào.
+- **Chọn tool:** `plain` lấy tool ở các cụm xa prompt nhất (theo embedding). `related` lấy tool ở cụm gần nhất. Glaive `no_call` không dùng được, vì cả pool chỉ có 23/35 prompt khác nhau, toàn kiểu "đặt vé, gọi pizza".
+- **Câu hỏi 3b:** lấy câu hỏi xLAM cần tool từ pool seen, cho **cả hai phía**, kèm tool ở cụm xa tool gốc. Pool unseen gần như toàn bài tính toán, mà loại đó model tự làm được.
+- **Rà từng nháp:** đạt khi không tool nào giúp trả lời được. Với 3b còn phải là câu hỏi thật sự cần dữ liệu hoặc hành động bên ngoài. Toàn bộ mẫu dùng trong dev/test đã được rà.
+- **Tỉ lệ nháp bị bỏ:** `related` khoảng 2–9%, vì tool cùng cụm đôi khi làm được việc (giải phương trình, dịch, kiểm ngữ pháp). `no_fitting_tool` khoảng 1/3, vì câu hỏi tự trả lời được.
+- **Hạn chế:** phía unseen có ít cụm không phải tính toán, nên tool trong `plain` unseen lặp lại khá nhiều. Dữ liệu No-tool cho train (khoảng 20% D_tool) chưa dựng, sẽ làm khi dựng D_tool.
+
 ### 4.4 Bài kiểm tra đổi tên (T-rename)
 
 Lấy T-seen, đổi tên tool và tên tham số **một cách nhất quán** trong schema, câu hỏi (nếu có nhắc tới) và đáp án. Có hai mức:

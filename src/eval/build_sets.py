@@ -12,7 +12,8 @@ Labelled here, from the data itself:
 Drafted for a labelling pass, never scored as they are: Missing-info (missing_param candidates) and
 Multi-turn (values from the tool result that the reference answer repeats), plus xLAM requests to rewrite
 without one required value, since Glaive's Missing-info prompts repeat too much. No-tool, the synonym level
-of T-rename and P need written labels and come later (PLAN 4.3, 4.4).
+of T-rename and P need written labels and come later (PLAN 4.4). No-tool (PLAN 4.3) is drafted from held-out
+chat the labelling pass kept and from xLAM requests offered only far tools, then checked draft by draft.
 """
 
 import argparse
@@ -261,7 +262,7 @@ def user_text(item: dict) -> str:
     return "\n".join(turn["content"] for turn in item["turns"] if turn["role"] == "user")
 
 
-def pick(candidates: list, n: int, index: GrowingIndex, *, rng) -> tuple[list, Counter]:
+def pick(candidates: list, n: int, index: GrowingIndex, *, rng, text=user_text) -> tuple[list, Counter]:
     """n items in random order, skipping prompts that repeat one already picked in any set."""
     order = list(candidates)
     rng.shuffle(order)
@@ -269,12 +270,12 @@ def pick(candidates: list, n: int, index: GrowingIndex, *, rng) -> tuple[list, C
     for item in order:
         if len(picked) == n:
             break
-        text = user_text(item)
-        verdict = index.match(text)
+        prompt = text(item)
+        verdict = index.match(prompt)
         if verdict:
             skipped[verdict] += 1
             continue
-        index.add(text)
+        index.add(prompt)
         picked.append(item)
     return picked, skipped
 
@@ -290,8 +291,8 @@ def with_id(example: dict, item: dict, set_name: str) -> dict:
 
 # ---- Labelled groups ---------------------------------------------------------------------
 
-LABEL_FILES = ("missing_info_glaive", "missing_info_rewrite", "multi_turn")
-LABELLED_GROUPS = ("missing_info", "multi_turn")
+LABEL_FILES = ("missing_info_glaive", "missing_info_rewrite", "multi_turn", "no_tool_prompts", "no_tool")
+LABELLED_GROUPS = ("missing_info", "multi_turn", "no_tool")
 
 
 def glaive_missing_info(draft: dict, label: dict) -> dict:
@@ -373,8 +374,141 @@ def assemble_labelled(drafts: dict, labels: dict, *, n_test: int, n_dev: int,
         stats[side]["multi_turn"] = {"picked": sum(len(items) for items in multi_parts[side].values()), "wanted": want,
                                      "derivable": n_derivable[side], "labelled": len(multi[side]) + len(derivable[side])}
     draft_ids = {draft["id"] for items in drafts.values() for draft in items}
+    # no_tool_prompts is keyed by chat example, not by draft.
     stats["unmatched_labels"] = {name: sum(label["id"] not in draft_ids for label in labels.get(name, []))
-                                 for name in LABEL_FILES}
+                                 for name in LABEL_FILES if name != "no_tool_prompts"}
+    return sets, stats
+
+
+# ---- No-tool (PLAN 4.3) ------------------------------------------------------------------
+
+NO_TOOL_KINDS = ("plain", "related", "no_fitting_tool")
+NO_FITTING_TOOL_REPLY = "None of the tools I have can help with this request, so I can't look it up or do it for you."
+
+
+def side_tools(examples: list, tools: list, vectors: np.ndarray, near: dict, *, unseen: bool) -> dict:
+    """The tools a side may offer: those its eval pool offers, with schema, cluster and embedding."""
+    row = {tool["text"]: index for index, tool in enumerate(tools)}
+    found = {}
+    for example in examples:
+        for tool in example["tools"]:
+            text = tool_text(tool)
+            if text in row and tools[row[text]]["unseen"] == unseen and text not in near:
+                found.setdefault(text, tool)
+    # One tool per name: an offer listing two tools with one name would be ambiguous.
+    by_name = {}
+    for text in sorted(found):
+        by_name.setdefault(found[text]["name"], text)
+    texts = sorted(by_name.values())
+    return {"tools": [found[text] for text in texts], "clusters": np.array([tools[row[text]]["cluster"] for text in texts]),
+            "vectors": vectors[[row[text] for text in texts]]}
+
+
+def centroids(offer: dict) -> tuple[np.ndarray, np.ndarray]:
+    ids = np.unique(offer["clusters"])
+    sums = np.stack([offer["vectors"][offer["clusters"] == cluster].sum(axis=0) for cluster in ids])
+    return ids, sums / np.linalg.norm(sums, axis=1, keepdims=True)
+
+
+def offer_tools(offer: dict, members: np.ndarray, rng, *, first=None) -> list:
+    """1–4 tools drawn from `members` (row indices into the side's tools), `first` included, in random order."""
+    k = min(len(members), rng.randint(1, 4))
+    chosen = list(rng.sample([int(m) for m in members if m != first], k - (first is not None)))
+    if first is not None:
+        chosen.append(int(first))
+    rng.shuffle(chosen)
+    return [offer["tools"][m] for m in chosen]
+
+
+def no_tool_drafts(side: str, offer: dict, prompts: list, prompt_vectors: np.ndarray, requests: list, catalog: dict,
+                   settings: dict, index: GrowingIndex, rng) -> tuple[list, dict]:
+    """Drafts of the three No-tool kinds for one side (PLAN 4.3):
+    plain — a general-knowledge prompt with tools from the clusters farthest from it;
+    related — a prompt close to one cluster with tools from that cluster, so a tool looks relevant but is not needed;
+    no_fitting_tool — an xLAM request that needs a tool, offered only tools far from the tools its example offered
+    (looked up in `catalog`, text -> (cluster, vector), since they may belong to the other side).
+    Every draft goes to the labelling pass, which checks that no offered tool helps."""
+    ids, centers = centroids(offer)
+    want = settings["test_per_group"] + round(settings["test_per_group"] * settings["dev_fraction"])
+    n_hard = round(want * settings["no_tool"]["hard_fraction"] / 2)
+    margin = settings["no_tool"]["draft_margin"]
+    similarity = prompt_vectors @ centers.T                       # prompt x cluster
+    nearest = similarity.argmax(axis=1)
+    closeness = similarity.max(axis=1)
+    cut = np.quantile(closeness, 1 - settings["no_tool"]["related_quantile"])
+    drafts, stats = [], {}
+
+    related = [(prompt, row) for row, prompt in enumerate(prompts) if closeness[row] >= cut]
+    picked, skipped = pick(related, round(n_hard * margin), index, rng=rng, text=lambda pair: pair[0]["turns"][0]["content"])
+    for prompt, row in picked:
+        members = np.flatnonzero(offer["clusters"] == ids[nearest[row]])
+        best = members[np.argmax(offer["vectors"][members] @ prompt_vectors[row])]
+        drafts.append(with_id(prompt, {"group": "no_tool", "kind": "related", "tools": offer_tools(offer, members, rng, first=best),
+                                       "turns": prompt["turns"][:1], "expected_calls": [],
+                                       "reference": prompt["turns"][1]["content"],
+                                       "draft": {"cluster": int(ids[nearest[row]]), "similarity": round(float(closeness[row]), 3)}},
+                              side))
+    stats["related"] = {"picked": len(picked), "wanted": round(n_hard * margin), "skipped": dict(skipped)}
+
+    plain = [(prompt, row) for row, prompt in enumerate(prompts)]
+    n_plain = round((want - 2 * n_hard) * margin)
+    picked, skipped = pick(plain, n_plain, index, rng=rng, text=lambda pair: pair[0]["turns"][0]["content"])
+    for prompt, row in picked:
+        far = [cluster for cluster in ids[np.argsort(similarity[row])] if cluster != ids[nearest[row]]][:3]
+        members = np.flatnonzero(np.isin(offer["clusters"], far))
+        if not len(members):
+            skipped["no_far_tool"] += 1
+            continue
+        drafts.append(with_id(prompt, {"group": "no_tool", "kind": "plain", "tools": offer_tools(offer, members, rng),
+                                       "turns": prompt["turns"][:1], "expected_calls": [],
+                                       "reference": prompt["turns"][1]["content"], "draft": {"clusters": [int(cluster) for cluster in far]}},
+                              side))
+    stats["plain"] = {"picked": len(picked), "wanted": n_plain, "skipped": dict(skipped)}
+
+    n_requests = round(n_hard * settings["no_tool"]["no_fitting_margin"])
+    picked, skipped = pick(requests, n_requests, index, rng=rng)
+    for request in picked:
+        called = request["expected_calls"][0]["name"]
+        own = [catalog[tool_text(tool)] for tool in request["tools"] if tool_text(tool) in catalog]
+        if not own:
+            skipped["unknown_tool"] += 1
+            continue
+        cosine = offer["vectors"] @ np.mean([vector for _, vector in own], axis=0)
+        # Far from every tool the request offered, and outside their clusters.
+        mask = (cosine < np.quantile(cosine, settings["no_tool"]["far_quantile"])) & \
+            ~np.isin(offer["clusters"], [cluster for cluster, _ in own])
+        if not mask.any():
+            skipped["no_far_tool"] += 1
+            continue
+        drafts.append({**request, "group": "no_tool", "kind": "no_fitting_tool",
+                       "tools": offer_tools(offer, np.flatnonzero(mask), rng), "expected_calls": [],
+                       "reference": NO_FITTING_TOOL_REPLY, "draft": {"needed_tool": called}})
+    stats["no_fitting_tool"] = {"picked": len(picked), "wanted": n_requests, "skipped": dict(skipped)}
+    return drafts, stats
+
+
+def no_tool_item(draft: dict) -> dict:
+    return {key: draft[key] for key in ("id", "set", "group", "kind", "tools", "turns", "expected_calls", "reference", "meta")}
+
+
+def assemble_no_tool(drafts: dict, labels: list, *, n_test: int, n_dev: int, hard_fraction: float) -> tuple[dict, dict]:
+    """No-tool per side from drafts the labelling pass kept (ok), in draft order. Both sides take the same
+    number of each kind (the hard kinds split hard_fraction evenly) and test and dev keep that mix."""
+    want, sets, stats = n_test + n_dev, defaultdict(lambda: defaultdict(list)), {}
+    ok = {label["id"] for label in labels if label.get("ok")}
+    n_hard = round(want * hard_fraction / 2)
+    counts = {"related": n_hard, "no_fitting_tool": n_hard, "plain": want - 2 * n_hard}
+    tests = {"related": round(n_test * n_hard / want), "no_fitting_tool": round(n_test * n_hard / want)}
+    tests["plain"] = n_test - 2 * tests["related"]
+    for side in ("t_seen", "t_unseen"):
+        kept = [no_tool_item(draft) for draft in drafts.get(f"{side}_no_tool", []) if draft["id"] in ok]
+        stats[side] = {"no_tool": {"picked": 0, "wanted": want, "labelled": len(kept)}}
+        for kind in NO_TOOL_KINDS:
+            items = [item for item in kept if item["kind"] == kind][:counts[kind]]
+            for split_name, part in split_dev_test(items, tests[kind]).items():
+                sets[split_name][side] += [{**item, "split": split_name} for item in part]
+            stats[side]["no_tool"][kind] = len(items)
+            stats[side]["no_tool"]["picked"] += len(items)
     return sets, stats
 
 
@@ -460,6 +594,26 @@ def run(pools: dict, tools: list, config: dict, *, labels=None, embed=embed_text
             stats[set_name]["multi_turn_extra"] = {"picked": len(picked), "wanted": extra, "skipped": dict(skipped)}
             drafts[f"{set_name}_multi_turn"] += picked
 
+    # No-tool drafts come last too. Prompts are held-out chat the labelling pass kept (no_tool_prompts).
+    # Drafts keep only the first turn, so repeats are checked on it, against C's first turns too.
+    keep = {label["id"] for label in (labels or {}).get("no_tool_prompts", []) if label.get("keep")}
+    in_c = {normalize_text(item["turns"][0]["content"]) for split_name in SPLITS for item in sets[split_name]["c"]}
+    prompts = [example for example in pools["chat_eval"] if example["id"] in keep and len(example["turns"]) > 1
+               and example["turns"][0]["role"] == "user" and example["turns"][1]["role"] == "assistant"
+               and normalize_text(example["turns"][0]["content"]) not in in_c]
+    if prompts:
+        prompt_vectors = embed([example["turns"][0]["content"] for example in prompts], config["split"]["embedder"])
+        # A side is set by the tools it offers. Both sides take their requests from the seen pool: the unseen
+        # pool asks mostly for arithmetic a model can do without any tool, so it has few requests that need one.
+        singles = [(example, item) for example in pools["seen_eval"] if example["group"] == "single"
+                   for item in [call_item(example)] if item is not None and len(item["expected_calls"]) == 1]
+        catalog = {tool["text"]: (tool["cluster"], vectors[row]) for row, tool in enumerate(tools)}
+        for set_name, examples, unseen in (("t_seen", pools["seen_eval"], False), ("t_unseen", kept_unseen, True)):
+            requests = [with_id(example, item, set_name) for example, item in singles]
+            offer = side_tools(examples, tools, vectors, near, unseen=unseen)
+            drafts[f"{set_name}_no_tool"], stats[set_name]["no_tool_drafts"] = no_tool_drafts(
+                set_name, offer, prompts, prompt_vectors, requests, catalog, settings, index, rng)
+
     labelled_stats = {}
     if labels:
         # A fresh index of the prompts the eval already holds: the drafting index also has every draft,
@@ -470,6 +624,13 @@ def run(pools: dict, tools: list, config: dict, *, labels=None, embed=embed_text
                 for item in sets[split_name][set_name]:
                     final.add(user_text(item))
         labelled, labelled_stats = assemble_labelled(drafts, labels, n_test=n_test, n_dev=n_dev, index=final)
+        no_tool, no_tool_stats = assemble_no_tool(drafts, labels.get("no_tool", []), n_test=n_test, n_dev=n_dev,
+                                                  hard_fraction=settings["no_tool"]["hard_fraction"])
+        for side, groups in no_tool_stats.items():
+            labelled_stats[side].update(groups)
+        for split_name in SPLITS:
+            for set_name, items in no_tool[split_name].items():
+                labelled[split_name][set_name] += items
         for split_name in SPLITS:
             for set_name, items in labelled[split_name].items():
                 sets[split_name][set_name] += items
@@ -548,6 +709,17 @@ def render_report(result: dict, config: dict, hashes: dict) -> str:
                 stat = labelled[side][group]
                 lines.append(f"| {side} | {group} | {stat['labelled']} | {stat['picked']} | {stat.get('glaive', '–')} | "
                              f"{stat.get('rewrite', '–')} | {stat.get('derivable', '–')} |")
+        if any("no_tool" in labelled.get(side, {}) for side in ("t_seen", "t_unseen")):
+            lines += ["", "No-tool (PLAN 4.3): prompt chat giữ riêng mà lượt gán nhãn giữ lại (`no_tool_prompts`), cùng "
+                      "câu hỏi xLAM cần tool. `plain` ghép tool ở các cụm xa chủ đề nhất; `related` ghép tool cùng cụm "
+                      "với prompt (có vẻ liên quan nhưng không cần dùng); `no_fitting_tool` là câu hỏi cần tool nhưng chỉ "
+                      "có tool ở cụm khác. Lượt gán nhãn kiểm từng nháp rằng không tool nào giúp được (`no_tool`). Hai phía "
+                      "có cùng số mẫu mỗi loại; test và dev giữ tỉ lệ đó. Đáp án đúng là không gọi tool.", "",
+                      "| Bộ | Có nhãn | Dùng | plain | related | no_fitting_tool |", "|---|---|---|---|---|---|"]
+            for side in ("t_seen", "t_unseen"):
+                stat = labelled[side]["no_tool"]
+                lines.append(f"| {side} | {stat['labelled']} | {stat['picked']} | "
+                             + " | ".join(str(stat.get(kind, 0)) for kind in NO_TOOL_KINDS) + " |")
         unmatched = {name: count for name, count in labelled["unmatched_labels"].items() if count}
         lines += ["", "Nhãn không khớp nháp nào: "
                   + (", ".join(f"`{name}`: {count}" for name, count in unmatched.items()) or "0") + "."]
@@ -556,7 +728,7 @@ def render_report(result: dict, config: dict, hashes: dict) -> str:
               "| File | Số mẫu | Nháp |", "|---|---|---|"]
     for name, items in sorted(result["drafts"].items()):
         kind = {"missing_info": "`missing_param_candidates`", "missing_info_rewrite": "`removable` (viết lại câu hỏi)",
-                "multi_turn": "`required_candidates`"}[name.split("_", 2)[2]]
+                "multi_turn": "`required_candidates`", "no_tool": "`kind` (rà: không tool nào giúp được)"}[name.split("_", 2)[2]]
         lines.append(f"| `drafts/{name}.jsonl` | {len(items)} | {kind} |")
     lines += ["", "## Hash", "", "| File | SHA-256 |", "|---|---|",
               *[f"| `{name}` | `{digest}` |" for name, digest in sorted(hashes.items())], ""]

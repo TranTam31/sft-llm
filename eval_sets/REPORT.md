@@ -10,11 +10,13 @@ Seed 0. Mỗi nhóm có 100 mẫu test và 33 mẫu dev (PLAN 3.2); bộ C có 1
 |---|---|---|---|---|---|
 | t_seen | missing_info | 600 | 100 | 33 | exact: 355, near: 111 |
 | t_seen | multi_turn | 600 | 100 | 33 | near: 105, exact: 194 |
+| t_seen | no_tool | – | 100 | 33 | – |
 | t_seen | parallel | 600 | 100 | 33 | – |
 | t_seen | select | 600 | 100 | 33 | – |
 | t_seen | single | 600 | 100 | 33 | – |
 | t_unseen | missing_info | 1210 | 100 | 33 | exact: 958, near: 175 |
 | t_unseen | multi_turn | 5603 | 100 | 33 | near: 878, exact: 1335 |
+| t_unseen | no_tool | – | 100 | 33 | – |
 | t_unseen | parallel | 2570 | 100 | 33 | – |
 | t_unseen | select | 1047 | 100 | 33 | near: 3, exact: 1 |
 | t_unseen | single | 1567 | 100 | 33 | near: 1 |
@@ -36,7 +38,7 @@ Seed 0. Mỗi nhóm có 100 mẫu test và 33 mẫu dev (PLAN 3.2); bộ C có 1
 | select | 39 |
 | single | 61 |
 
-Cụm của các mẫu T-unseen còn lại (dev + test, một mẫu tính cho mọi cụm của nó): cụm 1: 1, cụm 2: 13, cụm 4: 58, cụm 7: 23, cụm 14: 69, cụm 16: 1, cụm 23: 47, cụm 29: 359, cụm 34: 3, cụm 35: 25, cụm 36: 85, cụm 46: 67, cụm 47: 2, cụm 49: 3.
+Cụm của các mẫu T-unseen còn lại (dev + test, một mẫu tính cho mọi cụm của nó): cụm 1: 1, cụm 2: 13, cụm 4: 58, cụm 7: 23, cụm 14: 69, cụm 16: 4, cụm 22: 1, cụm 23: 47, cụm 26: 1, cụm 28: 2, cụm 29: 359, cụm 33: 4, cụm 34: 3, cụm 35: 25, cụm 36: 85, cụm 37: 1, cụm 38: 4, cụm 42: 2, cụm 46: 67, cụm 47: 3, cụm 48: 1, cụm 49: 5.
 
 Tool được gọi nhiều nhất trong T-unseen test: `validate_email` (16), `is_power` (16), `draw_cards` (14), `find_majority_element` (12), `bacterial_growth` (11), `chi_square_independence_test` (11), `calculate_standard_deviation` (11), `is_valid_email` (9), `is_power_of_two` (9), `numerical_derivative` (8), `get_range` (8), `find_next_greater_element` (8), `binary_addition` (8), `sort_numbers` (8), `is_anagram_phrase` (8).
 
@@ -57,6 +59,13 @@ Nhãn nằm ở `eval_sets/labels/` (dataset trên Hub). Missing-info lấy cùn
 | t_unseen | missing_info | 134 | 133 | 60 | 73 | – |
 | t_unseen | multi_turn | 267 | 133 | – | – | 99 |
 
+No-tool (PLAN 4.3): prompt chat giữ riêng mà lượt gán nhãn giữ lại (`no_tool_prompts`), cùng câu hỏi xLAM cần tool. `plain` ghép tool ở các cụm xa chủ đề nhất; `related` ghép tool cùng cụm với prompt (có vẻ liên quan nhưng không cần dùng); `no_fitting_tool` là câu hỏi cần tool nhưng chỉ có tool ở cụm khác. Lượt gán nhãn kiểm từng nháp rằng không tool nào giúp được (`no_tool`). Hai phía có cùng số mẫu mỗi loại; test và dev giữ tỉ lệ đó. Đáp án đúng là không gọi tool.
+
+| Bộ | Có nhãn | Dùng | plain | related | no_fitting_tool |
+|---|---|---|---|---|---|
+| t_seen | 207 | 133 | 89 | 22 | 22 |
+| t_unseen | 195 | 133 | 89 | 22 | 22 |
+
 Nhãn không khớp nháp nào: 0.
 
 ## Nháp chờ gán nhãn
@@ -68,9 +77,11 @@ Chưa phải bộ eval: cần một lượt gán nhãn rồi mới chia dev/test
 | `drafts/t_seen_missing_info.jsonl` | 134 | `missing_param_candidates` |
 | `drafts/t_seen_missing_info_rewrite.jsonl` | 160 | `removable` (viết lại câu hỏi) |
 | `drafts/t_seen_multi_turn.jsonl` | 301 | `required_candidates` |
+| `drafts/t_seen_no_tool.jsonl` | 288 | `kind` (rà: không tool nào giúp được) |
 | `drafts/t_unseen_missing_info.jsonl` | 77 | `missing_param_candidates` |
 | `drafts/t_unseen_missing_info_rewrite.jsonl` | 100 | `removable` (viết lại câu hỏi) |
 | `drafts/t_unseen_multi_turn.jsonl` | 529 | `required_candidates` |
+| `drafts/t_unseen_no_tool.jsonl` | 288 | `kind` (rà: không tool nào giúp được) |
 
 ## Hash
 
@@ -78,15 +89,17 @@ Chưa phải bộ eval: cần một lượt gán nhãn rồi mới chia dev/test
 |---|---|
 | `dev/c.jsonl` | `8b29f970f9a5c05802c85c769c7df9585f1fdef9e0651e6726e50db6bf1751cf` |
 | `dev/t_rename_nonsense.jsonl` | `7d2f6263ca7ec1b19d6d253ac5b3bc365d72686fb6da6a136c5cc565a46a3d5c` |
-| `dev/t_seen.jsonl` | `9c30d2bcb94e86d7e259c5e6cd08e6f8620314597521692c9d1110e208b68770` |
-| `dev/t_unseen.jsonl` | `f3564f488b54fa606949971a8429b47a4ea66e4458a7dc93fbf3dd2892183c90` |
+| `dev/t_seen.jsonl` | `41fd2763f7f9a34189788a0e590df04284c81373b7cf564f6c13fcbf5d73b7e2` |
+| `dev/t_unseen.jsonl` | `b482ad67f7f4beba8e39cfd25eea60c2b03994ae72473ccc66ee570a7c353172` |
 | `drafts/t_seen_missing_info.jsonl` | `ec2ed01a5b96cdfe7f7ddaf614c3d3c7505dd43821163909dda80663e44a6c1e` |
 | `drafts/t_seen_missing_info_rewrite.jsonl` | `d8ee12d696d73b899f30194fe244a424fe222f8f0b8cc6d38fc703a5f5744d39` |
 | `drafts/t_seen_multi_turn.jsonl` | `379c2b5f6a4c8771530d98423590a5375280ac684e7d289496dfec64111bb47b` |
+| `drafts/t_seen_no_tool.jsonl` | `71cbee680ce06a61d3482a3fec48f89aaa1591245241807335f3b9b156f70916` |
 | `drafts/t_unseen_missing_info.jsonl` | `e0a78bf169efdcdbb070def2ee0749ab89597f6d2a510d1afcb50b7587f08d42` |
 | `drafts/t_unseen_missing_info_rewrite.jsonl` | `9092289f10b91f64262b92239859abcc7a5fe0f1a8bbc8ce1b6653ca1a0d63da` |
 | `drafts/t_unseen_multi_turn.jsonl` | `54352350fb926746ae01c520166c565b0e26f2cf33625f54111da96879ade8c3` |
+| `drafts/t_unseen_no_tool.jsonl` | `a117c68afc5ec67eb7d3d31eccdb590f5587fbb0919ebdc2752eac10c2db01ae` |
 | `test/c.jsonl` | `82f99eb714d59864c789835aa046f6048d7d5cd603a1280be502d57670651be3` |
 | `test/t_rename_nonsense.jsonl` | `3dc7e341e92e55b26ee7648fb1781d5f4e66adc8f0573becc86b96e0881b0903` |
-| `test/t_seen.jsonl` | `ca35145fc5b73fbf207b53b2b253205c82b243dc7697c6f82eb36d6cb2c73bd7` |
-| `test/t_unseen.jsonl` | `594d095724574b4c30c9848a1963ebd2ba5815b475365884be538af9558fb8a4` |
+| `test/t_seen.jsonl` | `60516ada5b16f65708083af416929dff29eedf680ae195a6e034bb66a0b9e820` |
+| `test/t_unseen.jsonl` | `a287897d9f5974aab48e695658d8f700436c764419304f934bbf8b45ea73717a` |

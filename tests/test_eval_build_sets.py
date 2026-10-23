@@ -1,3 +1,4 @@
+from collections import Counter
 import json
 import random
 import unittest
@@ -5,8 +6,9 @@ import unittest
 import numpy as np
 
 from src.data.split import tool_text
-from src.eval.build_sets import (GrowingIndex, apply_rewrite, assemble_labelled, call_item, chat_item, clarify_draft, multi_turn_draft, near_seen_tools,
-                                 pick, rename_item, rewrite_draft, run)
+from src.eval.build_sets import (NO_FITTING_TOOL_REPLY, GrowingIndex, apply_rewrite, assemble_labelled, assemble_no_tool, call_item,
+                                 chat_item, clarify_draft, multi_turn_draft, near_seen_tools, pick, rename_item, rewrite_draft,
+                                 run)
 from src.eval.scorers import score_clarify, score_tool_sample
 from src.tool_calls import format_tool_calls, format_tool_responses
 
@@ -340,12 +342,14 @@ class RunTests(unittest.TestCase):
         chat = [{"id": f"c{i}", "source": "smoltalk:x", "group": "chat", "tools": [], "meta": {},
                  "turns": [{"role": "user", "content": f"tell me fact {i} {'w' * i}"}, {"role": "assistant", "content": "ok"}]}
                 for i in range(10)]
-        tools = [{"text": tool_text(item), "name": item["name"], "unseen": unseen_flag}
-                 for item, unseen_flag in ((weather, False), (stock, False), (sports, True), (near, True))]
+        tools = [{"text": tool_text(item), "name": item["name"], "unseen": unseen_flag, "cluster": cluster}
+                 for cluster, (item, unseen_flag) in enumerate(((weather, False), (stock, False), (sports, True), (near, True)))]
         config = {"seed": 0, "split": {"embedder": {}, "minhash": {"num_perm": 64, "bands": 16, "ngram": 3, "threshold": 0.7}},
                   "eval_sets": {"test_per_group": 3, "dev_fraction": 0.3333, "chat_test": 3, "near_seen_threshold": 0.85,
                                 "draft_margin": 1.5, "rewrite_drafts": {"t_seen": 5, "t_unseen": 5},
-                                "multi_turn_extra_drafts": {"t_unseen": 10}}}
+                                "multi_turn_extra_drafts": {"t_unseen": 10},
+                                "no_tool": {"hard_fraction": 0.3333, "draft_margin": 2.0, "related_quantile": 0.33,
+                                            "far_quantile": 0.5, "no_fitting_margin": 2.0}}}
         self.pools, self.tools, self.config = {"seen_eval": seen, "unseen_eval": unseen, "chat_eval": chat}, tools, config
 
     def test_sets_are_split_filtered_and_renamed(self):
@@ -354,8 +358,9 @@ class RunTests(unittest.TestCase):
         # labels: every absent group is reported, so nothing is uploaded.
         self.assertEqual(result["short"], [("t_seen", "single", 0), ("t_seen", "parallel", 0), ("t_unseen", "select", 0),
                                            ("t_unseen", "parallel", 0), ("t_seen", "missing_info", 0),
-                                           ("t_seen", "multi_turn", 0), ("t_unseen", "missing_info", 0),
-                                           ("t_unseen", "multi_turn", 0)])
+                                           ("t_seen", "multi_turn", 0), ("t_seen", "no_tool", 0),
+                                           ("t_unseen", "missing_info", 0), ("t_unseen", "multi_turn", 0),
+                                           ("t_unseen", "no_tool", 0)])
         self.assertEqual(result["dropped_unseen"], {"single": 5})
         test, dev = result["sets"]["test"], result["sets"]["dev"]
         self.assertEqual((len(test["t_seen"]), len(dev["t_seen"])), (3, 1))
@@ -383,6 +388,62 @@ class RunTests(unittest.TestCase):
         result = run(self.pools, self.tools, self.config, labels=labels, embed=fake_embed)
         labelled_short = [entry for entry in result["short"] if entry[1] in ("missing_info", "multi_turn")]
         self.assertEqual(labelled_short, [("t_seen", "missing_info", 0), ("t_unseen", "missing_info", 0)])
+
+    def test_no_tool_drafts_offer_tools_that_do_not_fit(self):
+        stock = tool("stock_price", ("ticker",), "stock")
+        self.pools["seen_eval"] += [call_example(f"q{i}", f"stock {phrase(word)}", [{"name": "stock_price", "arguments": {"ticker": word}}],
+                                                 [stock]) for i, word in enumerate(("alpha", "bravo", "charlie", "delta", "echo",
+                                                                                    "foxtrot", "golf", "hotel", "india", "juliet"))]
+        # The Missing-info rewrite drafts draw from the same requests first.
+        topics = ["why does the weather change with the {} season", "explain how sports leagues began in {}"]
+        places = ("spring", "autumn", "winter", "summer", "Peru", "Chile")
+        chat = [{"id": f"p{t}{i}", "source": "smoltalk:x", "group": "chat", "tools": [], "meta": {},
+                 "turns": [{"role": "user", "content": topic.format(place)}, {"role": "assistant", "content": "Because."}]}
+                for t, topic in enumerate(topics) for i, place in enumerate(places)]
+        # A longer chat that opens like another prompt: its first turn alone would repeat.
+        chat.append({**chat[1], "id": "p99", "turns": chat[1]["turns"] + [{"role": "user", "content": "And then?"},
+                                                                           {"role": "assistant", "content": "Then."}]})
+        self.pools["chat_eval"] += chat
+        labels = {"no_tool_prompts": [{"id": example["id"], "keep": example["id"] != "p00"} for example in chat]}
+        result = run(self.pools, self.tools, self.config, labels=labels, embed=fake_embed)
+        seen = result["drafts"]["t_seen_no_tool"]
+        self.assertEqual(Counter(draft["kind"] for draft in seen), {"plain": 4, "related": 2, "no_fitting_tool": 2})
+        for draft in seen:
+            names = {offered["name"] for offered in draft["tools"]}
+            self.assertEqual(len(names), len(draft["tools"]))
+            prompt = draft["turns"][0]["content"]
+            self.assertTrue(names)
+            self.assertNotEqual(prompt, chat[0]["turns"][0]["content"])   # dropped by the prompt labels
+            if draft["kind"] == "related":
+                self.assertIn("weather", prompt)
+                self.assertEqual(names, {"get_weather"})
+            elif draft["kind"] == "plain" and "weather" in prompt:
+                self.assertEqual(names, {"stock_price"})
+            elif draft["kind"] == "no_fitting_tool":
+                self.assertEqual((names, draft["reference"]), ({"get_weather"}, NO_FITTING_TOOL_REPLY))
+        # Unseen offers one cluster only, so plain and no_fitting_tool have no far tool to offer.
+        unseen = result["drafts"]["t_unseen_no_tool"]
+        self.assertEqual({draft["kind"] for draft in unseen}, {"related"})
+        prompts = [draft["turns"][0]["content"] for draft in seen + unseen]
+        self.assertEqual(len(prompts), len(set(prompts)))
+
+
+class NoToolAssembleTests(unittest.TestCase):
+    def test_both_sides_take_the_same_mix_and_test_keeps_it(self):
+        def draft(side, kind, index):
+            return {"id": f"{side}:{kind}{index}", "set": side, "group": "no_tool", "kind": kind, "tools": [WEATHER],
+                    "turns": [{"role": "user", "content": "q"}], "expected_calls": [], "reference": "a", "meta": {}}
+        drafts = {f"{side}_no_tool": [draft(side, kind, i) for kind in ("plain", "related", "no_fitting_tool") for i in range(8)]
+                  for side in ("t_seen", "t_unseen")}
+        labels = [{"id": item["id"], "ok": not item["id"].endswith("related0")} for items in drafts.values() for item in items]
+        sets, stats = assemble_no_tool(drafts, labels, n_test=6, n_dev=3, hard_fraction=0.3333)
+        for side in ("t_seen", "t_unseen"):
+            # A third of 9 split over two hard kinds rounds to one each.
+            self.assertEqual(stats[side]["no_tool"], {"picked": 9, "wanted": 9, "labelled": 23, "plain": 7, "related": 1,
+                                                      "no_fitting_tool": 1})
+            test = Counter(item["kind"] for item in sets["test"][side])
+            self.assertEqual(test, {"plain": 4, "related": 1, "no_fitting_tool": 1})
+            self.assertNotIn(f"{side}:related0", [item["id"] for split in ("test", "dev") for item in sets[split][side]])
 
 
 if __name__ == "__main__":
