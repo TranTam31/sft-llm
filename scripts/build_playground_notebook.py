@@ -28,7 +28,8 @@ def cell(kind, text):
 
 def source_bundle():
     paths = (sorted((ROOT / "src").rglob("*.py")) + sorted((ROOT / "configs").glob("*.yaml"))
-             + sorted((ROOT / "tests").glob("test_*.py")))
+             + sorted((ROOT / "tests").glob("test_*.py"))
+             + [ROOT / "eval_sets" / "MANIFEST.md", ROOT / "eval_sets" / "p.jsonl"])
     payload = json.dumps({str(path.relative_to(ROOT)).replace("\\", "/"): path.read_text(encoding="utf-8")
                           for path in paths}, ensure_ascii=False).encode("utf-8")
     return base64.b64encode(payload).decode("ascii"), hashlib.sha256(payload).hexdigest()
@@ -102,7 +103,7 @@ Kết quả chỉ nằm trong runtime Colab cho đến khi tải xuống. Notebo
 """),
         cell("markdown", "## 1. Cài thư viện\nCell này dùng torch có sẵn của Colab, chỉ cài các thư viện inference còn lại."),
         cell("code", install_code(INFERENCE_PINS)),
-        cell("markdown", "## 2. Nạp mã nguồn của dự án\nBundle bên dưới chỉ gồm `src/*.py`, `configs/*.yaml` và các test offline; không có dữ liệu cá nhân hay thông tin đăng nhập. Sửa logic tại repo rồi chạy lại `python scripts/build_playground_notebook.py` để cập nhật notebook."),
+        cell("markdown", "## 2. Nạp mã nguồn của dự án\nBundle bên dưới chỉ gồm `src/*.py`, `configs/*.yaml`, các test offline, cùng `eval_sets/MANIFEST.md` và bộ P; không có dữ liệu cá nhân hay thông tin đăng nhập. Sửa logic tại repo rồi chạy lại `python scripts/build_playground_notebook.py` để cập nhật notebook."),
         cell("code", bundle_code(encoded, digest)),
         cell("markdown", "## 3. Kiểm tra mã trước khi tải model\nBao gồm test offline và integration test trên một Llama ngẫu nhiên cực nhỏ. Model nhỏ này chỉ kiểm tra code, không đo năng lực SmolLM2."),
         cell("code", TESTS_CODE),
@@ -470,9 +471,53 @@ for pattern in ("test_bfcl.py", "test_scorers.py"):
     write_notebook("04_bfcl.ipynb", cells, digest)
 
 
+def build_checkpoint_eval():
+    encoded, digest = source_bundle()
+    cells = [
+        cell("markdown", """# Eval checkpoint trên bộ đã đóng băng
+Sinh output greedy trên dev (hoặc test, chỉ sau khi khóa giao thức) và bộ P, chấm bằng luật, ghi `results/<run>/<checkpoint>/` (PLAN 3.6); thêm perplexity và KL so với base trên wikitext-2 (PLAN 3.3). Mặc định chạy E0: base zero-shot, base few-shot và 360M-Instruct bằng template riêng của nó. Nên dùng runtime GPU.
+"""),
+        cell("markdown", "## 1. Cài thư viện"),
+        cell("code", install_code(INFERENCE_PINS)),
+        cell("markdown", "## 2. Nạp mã nguồn của dự án"),
+        cell("code", bundle_code(encoded, digest)),
+        cell("markdown", "## 3. Kiểm tra mã"),
+        cell("code", TESTS_CODE),
+        cell("markdown", HF_LOGIN_MD + "\nĐiền `DATASET_REPO` dạng `<username>/<tên repo>`: dataset private chứa `eval_sets/`."),
+        cell("code", '''from google.colab import userdata
+from huggingface_hub import whoami
+
+os.environ["HF_TOKEN"] = userdata.get("HF_TOKEN")
+DATASET_REPO = ""  # ví dụ "your-username/sft-capability-data"
+print("Logged in as:", whoami()["name"])
+assert DATASET_REPO, "Điền DATASET_REPO trước khi chạy tiếp."
+'''),
+        cell("markdown", "## 5. Tải dev/test và kiểm hash\nDừng ở đây nếu `src.eval.manifest` báo file thiếu hoặc khác."),
+        cell("code", '''from src.eval.run_eval import fetch
+fetch(DATASET_REPO)
+!python -m src.eval.manifest
+'''),
+        cell("markdown", "## 6. Sinh output và chấm\n`MODELS` gồm (tên checkpoint, model, tùy chọn). Model là khóa trong `configs/models.yaml`, id trên Hub hoặc thư mục checkpoint. Mỗi dòng in thời gian sinh để đo ngân sách eval (PLAN 3.6)."),
+        cell("code", '''import torch
+RUN, SPLIT = "e0", "dev"
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+MODELS = [("base-zero-shot", "base", ""), ("base-few-shot", "base", "--few-shot"),
+          ("instruct-360m", "chat_reference", "--template native")]
+for name, model, options in MODELS:
+    !python -m src.eval.run_eval --model {model} --run {RUN} --checkpoint {name} --split {SPLIT} --device {DEVICE} {options}
+'''),
+        cell("markdown", "## 7. Perplexity và KL trên wikitext-2\nKL tính so với base; với chính base thì bỏ qua KL."),
+        cell("code", '''for model in ("base", "chat_reference"):
+    !python -m src.eval.knowledge --model {model} --device {DEVICE} --output results/{RUN}/knowledge-{model}.json
+'''),
+    ]
+    write_notebook("05_eval.ipynb", cells, digest)
+
+
 if __name__ == "__main__":
     build()
     build_train_smoke()
     build_data()
     build_eval()
     build_bfcl()
+    build_checkpoint_eval()

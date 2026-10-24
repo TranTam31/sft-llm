@@ -102,3 +102,28 @@ Server trả `result: true`; đã lấy danh sách công cụ và gọi `get_cel
 - Lần chạy đầu, cell cài thư viện không cài đúng phiên bản mà không báo lỗi (Colab giữ `transformers` 5.20.1, thiếu `trl`). Notebook nay kiểm tra phiên bản sau khi cài; kết quả ở bảng trên là lần chạy lại với đúng phiên bản.
 
 **Ghi chú vận hành:** secret `HF_TOKEN` chỉ đọc được khi cell chạy từ giao diện Colab, không đọc được qua MCP; người dùng chạy cell đăng nhập một lần, các cell sau dùng biến môi trường đó.
+
+## 2026-10-24 — Pilot: E0 trên dev, đo thời gian eval
+
+**Loại hoạt động:** pilot (PLAN §6, Giai đoạn 2), chỉ dùng dev. Kiểm bộ chạy eval và scorer trên output thật; chưa phải kết luận.
+
+**Thiết lập:** `src/eval/run_eval.py` trên dev (T-seen, T-unseen, hai mức T-rename, C; 644 mẫu) cùng bộ P (60 mẫu, chỉ sinh, không chấm). Greedy, `max_new_tokens=256`, batch 32, left padding, fp16, Colab T4, notebook `05_eval`, source bundle `7bc7db04…`; `src.eval.manifest` khớp 11 file trước khi chạy. Base `f8027fd` chạy zero-shot và few-shot (3 ví dụ cố định trong `FEW_SHOT`) với template dự án; 360M-Instruct `a10cc15` dùng chat template riêng của nó (cùng chuỗi ChatML khi có system prompt). Output và metric tải về `results/e0/` (git-ignore).
+
+**Kết quả (dev, không có CI; clarify và grounded đã chấm lại theo luật "phải dừng đúng" bên dưới):**
+
+| | stop_rate T-seen / T-unseen / C | call_exact | decision_bacc T-seen / T-unseen | clarify_correct T-seen / T-unseen | grounded_correct T-seen / T-unseen |
+|---|---|---|---|---|---|
+| base zero-shot | 0 / 0 / 0 | 0 | 0.50 / 0.50 | 0 / 0 (trước: 0.18 / 0.33) | 0 / 0 (trước: 0.00 / 0.15) |
+| base few-shot | 0 / 0 / 0 | 0 | 0.47 / 0.48 | 0 / 0 (trước: 0.67 / 0.48) | 0 / 0 (trước: 0.12 / 0.15) |
+| 360M-Instruct | 0.65 / 0.78 / 0.82 | 0 | 0.50 / 0.50 | 0.03 / 0.03 (trước: 0.06 / 0.03) | 0.24 / 0.12 (không đổi) |
+
+- Không model nào gọi tool ở nhóm cần tool (`format_valid` = 0). Chuỗi `<tool_call>` chỉ xuất hiện ở Multi-turn, nơi model chép lại lời gọi ở lượt trước thay vì đọc kết quả tool.
+- Perplexity wikitext-2 test (301 653 token, cửa sổ 1024): base 13.01, 360M-Instruct 14.50; KL(Instruct ‖ base) = 0.148 nat/token.
+- **Thời gian sinh** (P + dev, 704 prompt): base zero-shot 311 giây, 360M-Instruct 314 giây, base few-shot 641 giây. Mỗi batch chạy tới khi mẫu dài nhất xong, nên khi base không bao giờ dừng thì mọi batch đều đủ 256 token. Checkpoint đã học cách dừng sẽ nhanh hơn hoặc bằng mức ~5 phút, trong ngân sách 10 phút (PLAN 3.6).
+
+**Phát hiện về scorer (cần quyết định trước khi khóa giao thức):**
+
+- Base không sinh token điều khiển thật. Ở chỗ cần `<|im_end|>` / `<|im_start|>` (id 2 / 1) nó sinh token khác như `tolist` (28928) hay `ipython`, rồi tự viết tiếp các lượt `user` / `system` giả. Vì vậy `role_break_rate` = 0 dù role break xảy ra liên tục: luật chỉ bắt token thật.
+- `clarify_correct` và `grounded_correct` chấm trên toàn bộ output, nên được cộng cả phần chữ của lượt giả. Ví dụ base zero-shot được tính đúng chỉ vì lặp lại câu hỏi của user (có dấu `?` và tên tham số). Một phần điểm few-shot là thật: model chép mẫu "Sure. What is the …?" của ví dụ thứ ba, nhưng phần đuôi vẫn là lượt giả.
+
+**Quyết định (người dùng chọn, ghi ở PLAN 3.3):** `clarify_correct` và `grounded_correct` chỉ tính đúng khi output dừng bằng `<|im_end|>`. Ba lần chạy được chấm lại từ `outputs.jsonl` bằng `python -m src.eval.run_eval --rescore results/e0/<checkpoint>`, không sinh lại. Base về 0 ở cả hai metric; 360M-Instruct mất một mẫu clarify ở T-seen (bị cắt ở 256 token). `role_break_rate` vẫn không bắt được lượt giả của base; chỉ số dừng (`stop_rate`, `truncated_rate`) là nơi phản ánh hành vi này.
