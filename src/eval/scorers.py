@@ -7,8 +7,8 @@ An output is read two ways:
 - tool_calls.parse_tool_calls (strict): the whole output must be call blocks only.
   Reported as strict_format.
 
-clarify_correct and grounded_correct here are the rule layer only; the LLM judge for
-uncertain cases (PLAN 3.3) is added on top later.
+clarify_correct and grounded_correct are rules only: no judge is re-run per checkpoint
+(PLAN 3.3), so the labels carry synonyms and required values strict enough for rules.
 """
 
 from collections import Counter
@@ -184,20 +184,88 @@ def score_clarify(output: str, *, missing_param: str, synonyms=()) -> dict:
 VALUE_TOKEN = re.compile(r"(?<![a-z0-9.])-?\d+(?:\.\d+)?|[a-z0-9]+")
 
 
+def _drop_thousands(text):
+    return re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", text.lower().replace("’", "'"))
+
+
 def _normalize(text):
-    text = re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", text.lower())
-    return " ".join(VALUE_TOKEN.findall(text))
+    return " ".join(VALUE_TOKEN.findall(_drop_thousands(text)))
+
+
+# Clause ends: sentence marks, and . , : unless a digit follows ("31.5", "14:05" stay whole).
+CLAUSE_END = re.compile(r"[!?;\n]|[.,:](?!\d)")
+NEGATION = {"not", "no", "never", "cannot", "nor", "neither", "unable"}
+# "not only 31", "no more than 31" state the value instead of denying it.
+NOT_NEGATING_NEXT = {"only", "more", "less"}
+NEGATION_WINDOW = 3
+
+
+def _clause_tokens(text):
+    """(token, clause index) for every value token; a value may span clauses ("Chicago, IL")."""
+    return [(token, index) for index, clause in enumerate(CLAUSE_END.split(_drop_thousands(text)))
+            for token in VALUE_TOKEN.findall(clause)]
+
+
+def _negates(tokens, position):
+    word = tokens[position]
+    following = tokens[position + 1] if position + 1 < len(tokens) else ""
+    if word == "t":  # "isn't", "couldn't" split into "isn" "t"; a lone "t" ("t test") is not one.
+        return position > 0 and tokens[position - 1].endswith("n")
+    return word in NEGATION and following not in NOT_NEGATING_NEXT
+
+
+def _mentions(tokens, clauses, value):
+    """'stated' when some occurrence is not denied by a negation just before it in the same clause,
+    'negated' when every occurrence is, None when the value is absent."""
+    target = VALUE_TOKEN.findall(_drop_thousands(str(value)))
+    if not target:
+        return None
+    found = None
+    for start in range(len(tokens) - len(target) + 1):
+        if tokens[start:start + len(target)] != target:
+            continue
+        window = [i for i in range(max(0, start - NEGATION_WINDOW), start) if clauses[i] == clauses[start]]
+        if not any(_negates(tokens, i) for i in window):
+            return "stated"
+        found = "negated"
+    return found
 
 
 def score_grounded(output: str, *, required: list, forbidden: list) -> dict:
-    """Multi-turn rule layer: every required value present, no forbidden value. Negation needs the judge."""
+    """Multi-turn rule layer: every required value stated, no forbidden value stated.
+
+    A value preceded in its clause by a negation ("not 31", "isn't available", "couldn't find Hotel A")
+    is denied, not stated; "It is 31, not 30" still states 31. Negation after the value ("31 is wrong")
+    is not seen by the rules."""
     called = extract_tool_calls(output).has_marker
-    text = f" {_normalize(_strip_stop(output))} "
-    present = lambda value: f" {_normalize(str(value))} " in text
-    required_all = all(present(value) for value in required)
-    forbidden_none = not any(present(value) for value in forbidden)
+    pairs = _clause_tokens(_strip_stop(output))
+    tokens, clauses = [token for token, _ in pairs], [clause for _, clause in pairs]
+    mentions = {str(value): _mentions(tokens, clauses, value) for value in [*required, *forbidden]}
+    negated = [value for value in required if mentions[str(value)] == "negated"]
+    required_all = all(mentions[str(value)] == "stated" for value in required)
+    forbidden_none = not any(mentions[str(value)] == "stated" for value in forbidden)
     return {"called": called, "required_all": required_all, "forbidden_none": forbidden_none,
-            "grounded_rule": not called and required_all and forbidden_none}
+            "negated_required": negated, "grounded_rule": not called and required_all and forbidden_none}
+
+
+NO_FITTING_TOOL = re.compile("|".join([
+    r"\bnone of the (?:\w+ ){0,2}(?:tools|functions)\b",
+    r"\bno (?:\w+ )?(?:tool|function)s? (?:\w+ )?(?:can|could|that|to|for|available|fits?|matches?|is|are)\b",
+    r"\b(?:tools?|functions?)\b[^.!?\n]{0,40}\b(?:can't|cannot|can not|don't|do not|doesn't|does not|aren't|are not|"
+    r"isn't|is not|won't|will not)\b",
+    r"\b(?:don't|do not|doesn't|does not) (?:have|include|offer|provide|support) (?:a |an |any |the )?"
+    r"(?:\w+ ){0,2}(?:tool|function|access|abilit|capabilit)",
+    r"\b(?:can't|cannot|can not|unable to|not able to) (?:access|look|retrieve|fetch|browse|check|get|find|search|"
+    r"provide (?:real|live|current|up))",
+    r"\b(?:no|without) (?:access to|real-time|live) ",
+]))
+
+
+def score_no_fitting(output: str) -> dict:
+    """No-tool 3b side metric (PLAN 4.3): no call, and says that no provided tool fits the request."""
+    called = extract_tool_calls(output).has_marker
+    says = bool(NO_FITTING_TOOL.search(_strip_stop(output).lower().replace("’", "'")))
+    return {"called": called, "says_no_tool": says, "no_fitting_said": not called and says}
 
 
 ROLE_BREAK = re.compile(r"<\|im_start\|>\s*(user|system)\b")
@@ -232,4 +300,17 @@ def aggregate_tool_group(samples: list[dict]) -> dict:
     metrics["decision_bacc"] = (0.5 * (_mean(s["called"] for s in need) + _mean(not s["called"] for s in no_tool))
                                 if need and no_tool else None)
     metrics["n_need_tool"], metrics["n_no_tool"] = len(need), len(no_tool)
+    # 3b samples carry score_no_fitting's keys too; the side metric is over those samples only.
+    no_fitting = [sample for sample in no_tool if "no_fitting_said" in sample]
+    metrics["no_fitting_said"] = _mean(sample["no_fitting_said"] for sample in no_fitting)
+    metrics["n_no_fitting"] = len(no_fitting)
     return metrics
+
+
+def aggregate_grounded(samples: list[dict]) -> dict:
+    """Multi-turn group: score_grounded results, each with the item's meta.derivable added.
+    The side score keeps the samples whose answer cannot be worked out from the question (PLAN 3.3)."""
+    tool_read = [sample for sample in samples if not sample["derivable"]]
+    return {"grounded_correct": _mean(sample["grounded_rule"] for sample in samples),
+            "grounded_correct_not_derivable": _mean(sample["grounded_rule"] for sample in tool_read),
+            "n": len(samples), "n_not_derivable": len(tool_read)}

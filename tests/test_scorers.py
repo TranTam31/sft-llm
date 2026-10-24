@@ -4,8 +4,8 @@ from itertools import permutations
 import random
 import unittest
 
-from src.eval.scorers import (aggregate_tool_group, extract_tool_calls, max_weight_assignment, score_behavior,
-                              score_clarify, score_grounded, score_tool_sample)
+from src.eval.scorers import (aggregate_grounded, aggregate_tool_group, extract_tool_calls, max_weight_assignment,
+                              score_behavior, score_clarify, score_grounded, score_no_fitting, score_tool_sample)
 from src.tool_calls import format_tool_calls
 
 
@@ -183,9 +183,92 @@ class GroundedTests(unittest.TestCase):
         self.assertTrue(score_grounded("Born 1990-05-15, total $1,000.", required=["05", "1000"],
                                        forbidden=[])["required_all"])
 
-    def test_negation_is_left_to_the_judge(self):
-        # "not 31" contains the value; the rule layer cannot see the negation (PLAN 3.3: judge decides).
-        self.assertTrue(score_grounded("It is not 31 C.", required=["31"], forbidden=[])["required_all"])
+    def test_denied_values_are_not_stated(self):
+        cases = {
+            "not": ("It is not 31 C in Hanoi.", ["31"]),
+            "contraction": ("The tip amount isn't $10.", [10]),
+            "curly apostrophe": ("The tip amount isn’t $10.", [10]),
+            "couldn't find": ("I couldn't find Hotel A for those dates.", ["Hotel A"]),
+            "status": ("Hotel A is not available tonight.", ["Hotel A", "Available"]),
+            "no": ("There are no flights to Chicago, IL today.", ["Chicago, IL"]),
+            "never": ("Your package was never in transit.", ["In transit"]),
+        }
+        for label, (output, required) in cases.items():
+            with self.subTest(case=label):
+                result = score_grounded(output, required=required, forbidden=[])
+                self.assertFalse(result["grounded_rule"])
+                self.assertTrue(result["negated_required"])
+
+    def test_negation_elsewhere_does_not_deny_the_value(self):
+        cases = {
+            "correction": ("The tip is $10, not $15.", [10]),
+            "other clause": ("There is no mode, and the mean is 17.5.", [17.5]),
+            "other sentence": ("No problem! The tip is $10.", [10]),
+            "far before": ("I did not round anything: the exact tip amount is $10.", [10]),
+            "not only": ("It is not only 31 C but also humid.", ["31"]),
+            "no more than": ("It costs no more than $200 per night.", ["$200 per night"]),
+            "t test": ("A paired t test gives 2.5 here.", [2.5]),
+            "value holds a negation word": ('Try "And Then There Were None" next.', ["And Then There Were None"]),
+            "spans a comma": ("It is now in Chicago, IL.", ["Chicago, IL"]),
+            "stated once, denied once": ("It is not 30 C. It is 31 C.", ["31"]),
+        }
+        for label, (output, required) in cases.items():
+            with self.subTest(case=label):
+                self.assertTrue(score_grounded(output, required=required, forbidden=[])["grounded_rule"])
+        both = score_grounded("It is not 31 C. Actually it is 31 C.", required=["31"], forbidden=[])
+        self.assertTrue(both["required_all"])
+        self.assertEqual(both["negated_required"], [])
+
+    def test_a_denied_forbidden_value_is_allowed(self):
+        self.assertTrue(score_grounded("It is 31 C and it is not going to rain.", required=["31"],
+                                       forbidden=["rain"])["grounded_rule"])
+
+    def test_side_score_keeps_only_samples_that_need_the_tool_result(self):
+        samples = [{**score_grounded("The tip is $10.", required=[10], forbidden=[]), "derivable": True},
+                   {**score_grounded("The tip is $12.", required=[10], forbidden=[]), "derivable": True},
+                   {**score_grounded("It is in transit.", required=["In transit"], forbidden=[]), "derivable": False},
+                   {**score_grounded("It was delivered.", required=["In transit"], forbidden=[]), "derivable": False},
+                   {**score_grounded("Not in transit.", required=["In transit"], forbidden=[]), "derivable": False}]
+        metrics = aggregate_grounded(samples)
+        self.assertEqual(metrics["grounded_correct"], 0.4)
+        self.assertAlmostEqual(metrics["grounded_correct_not_derivable"], 1 / 3)
+        self.assertEqual((metrics["n"], metrics["n_not_derivable"]), (5, 3))
+
+
+class NoFittingToolTests(unittest.TestCase):
+    def test_saying_no_tool_fits_is_recognised(self):
+        outputs = (
+            "None of the tools I have can help with this request, so I can't look it up or do it for you.",
+            "I'm sorry, but none of the provided functions can fetch stock data.",
+            "There is no suitable tool for looking up player rankings.",
+            "The available tools don't cover this, so I can't help with that request.",
+            "I don't have access to real-time market data.",
+            "I'm unable to access the TrackMania API with the tools provided.",
+            "Unfortunately I cannot retrieve the latest data on Panasonic.<|im_end|>",
+            "I don’t have a tool for that.",
+        )
+        for output in outputs:
+            with self.subTest(output=output):
+                self.assertTrue(score_no_fitting(output)["no_fitting_said"])
+
+    def test_answering_guessing_or_calling_is_not_saying_it(self):
+        cases = {
+            "makes up data": "Panasonic (6752) is trading at 1,520 yen today.",
+            "plain refusal": "Sorry, I won't do that.",
+            "general answer": "Matchmaking rank is a number that reflects a player's skill.",
+            "calls a tool anyway": format_tool_calls([WEATHER]) + " None of the tools fit.",
+        }
+        for label, output in cases.items():
+            with self.subTest(case=label):
+                self.assertFalse(score_no_fitting(output)["no_fitting_said"])
+
+    def test_side_metric_counts_only_3b_samples(self):
+        plain = score("Blue light scatters more.", expected=())
+        said = {**score("No tool fits this.", expected=()), **score_no_fitting("No tool fits this.")}
+        guessed = {**score("It is 1,520 yen.", expected=()), **score_no_fitting("It is 1,520 yen.")}
+        metrics = aggregate_tool_group([score(format_tool_calls([WEATHER])), plain, said, guessed])
+        self.assertEqual(metrics["no_fitting_said"], 0.5)
+        self.assertEqual((metrics["n_no_tool"], metrics["n_no_fitting"]), (3, 2))
 
 
 class BehaviorTests(unittest.TestCase):
