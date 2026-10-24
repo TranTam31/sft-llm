@@ -389,7 +389,7 @@ Số lượng cụ thể sẽ chốt sau pilot, dự kiến N_chat ≈ N_tool �
 - [x] Tạo T-rename (hai mức), viết bộ P bằng tay (`src/eval/probe_set.py` → `eval_sets/p.jsonl`), gán nhãn hoặc rà nhãn cho Missing-info và Multi-turn
 - [x] Viết các metric ở mục 3.3, test trên output viết tay (có cả đúng lẫn sai). Không dùng LLM judge (quyết định ở mục 3.3); việc so luật với chấm tay trên 50 output thật dời sang pilot. Phép đo bên trong model (mục 3.4) viết khi có checkpoint.
 - [x] Cài `lm-evaluation-harness` (`src/eval/benchmarks.py`, notebook `03_eval`), chạy được trên SmolLM2-360M-Instruct
-- [ ] Cài BFCL, chạy được trên một model Instruct: chờ tài khoản Colab có GPU, vì BFCL chạy model local qua vLLM/SGLang
+- [x] Cài BFCL (`src/eval/bfcl.py`, notebook `04_bfcl`), chạy được trên SmolLM2-360M-Instruct. BFCL không có handler SmolLM2, nên dự án đăng ký một handler dùng đúng prompt tool của SFT; sinh output bằng vLLM, chấm bằng AST checker chính thức. Trên T4 mất khoảng 20 phút cho 1040 mẫu. Với prompt này, 360M-Instruct không xuất `<tool_call>` lần nào: simple/multiple/parallel đạt 0%, irrelevance 100%. Phép kiểm đối chứng (đáp án BFCL viết thành `<tool_call>`) đạt 98.5–100%; phần trượt là do cách dựng đáp án đối chứng, không phải do decode.
 - [x] **Đóng băng** dev/test và P: ghi hash vào `eval_sets/MANIFEST.md` (`python -m src.eval.manifest` để kiểm)
 
 ### Giai đoạn 2 — Pilot (E0 + E2 ngắn, **chỉ dùng dev**)

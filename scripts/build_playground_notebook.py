@@ -421,8 +421,58 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
     write_notebook("03_eval.ipynb", cells, digest)
 
 
+BFCL_PINS = [("vllm", "0.32.0"), ("bfcl-eval", "2026.3.23")]
+# bfcl-eval's own requirements, minus the exact numpy / networkx / filelock / mpmath / faiss pins that conflict with
+# vLLM's torch; bfcl-eval itself goes in with --no-deps.
+BFCL_DEPS = ("requests tqdm numpy pandas huggingface_hub pydantic>=2.8.2 python-dotenv>=1.0.1 tree_sitter==0.21.3 "
+             "tree-sitter-java==0.21.0 tree-sitter-javascript==0.21.4 openai>=1.86.0 mistralai==1.7.0 anthropic>=0.75.0 "
+             "cohere==5.18.0 typer>=0.12.5 tabulate>=0.9.0 datamodel-code-generator==0.25.7 google-genai>=1.52.0 "
+             "qwen-agent mpmath tenacity>=8.5.0 writer-sdk>=2.1.0 overrides boto3 beautifulsoup4 html2text "
+             "rank_bm25==0.2.2 google-search-results sentence-transformers>=2.7.0 faiss-cpu networkx filelock")
+
+
+def bfcl_install_code():
+    wanted = ", ".join(f'"{name}": "{version}"' for name, version in BFCL_PINS)
+    deps = " ".join(f"'{dep}'" for dep in BFCL_DEPS.split())
+    return f'''%pip install -q vllm=={BFCL_PINS[0][1]} {deps}
+%pip install -q --no-deps bfcl-eval=={BFCL_PINS[1][1]}
+from importlib.metadata import version
+wanted = {{{wanted}}}
+installed = {{name: version(name) for name in wanted}}
+print(installed, "torch", version("torch"), "transformers", version("transformers"))
+assert installed == wanted, "Phiên bản chưa khớp; chạy lại cell này."
+'''
+
+
+def build_bfcl():
+    encoded, digest = source_bundle()
+    cells = [
+        cell("markdown", """# Phase 1 — BFCL
+Nhóm simple / multiple / parallel / irrelevance của BFCL (PLAN 3.2), chấm bằng AST checker chính thức của `bfcl-eval`. BFCL không có handler cho SmolLM2, nên `src/eval/bfcl.py` đăng ký một handler dùng đúng prompt tool của SFT. Model chạy qua vLLM: cần runtime GPU. Không cần token HF.
+"""),
+        cell("markdown", "## 1. Cài thư viện\nvLLM kéo theo torch và transformers của nó, nên notebook này không ghim transformers như các notebook khác. Cài xong phải khởi động lại session (Runtime → Restart session) vì torch đổi bản, rồi chạy tiếp từ mục 2. Colab báo xung đột với vài gói có sẵn (google-colab, cudf…); notebook này không dùng chúng."),
+        cell("code", bfcl_install_code()),
+        cell("markdown", "## 2. Nạp mã nguồn của dự án"),
+        cell("code", bundle_code(encoded, digest)),
+        cell("markdown", "## 3. Kiểm tra mã\nChỉ chạy test của phần prompt, parser và BFCL; các test huấn luyện cần đúng bản transformers đã ghim."),
+        cell("code", '''import subprocess
+for pattern in ("test_bfcl.py", "test_scorers.py"):
+    checks = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", pattern, "-v"], capture_output=True, text=True)
+    print(checks.stdout)
+    print(checks.stderr)
+    checks.check_returncode()
+'''),
+        cell("markdown", "## 4. Chạy BFCL\n`MODEL` là khóa trong `configs/models.yaml`, id trên Hub hoặc thư mục checkpoint. Kết quả ghi vào `results/bfcl/`."),
+        cell("code", '''MODEL = "chat_reference"
+!python -m src.eval.bfcl --model {MODEL}
+'''),
+    ]
+    write_notebook("04_bfcl.ipynb", cells, digest)
+
+
 if __name__ == "__main__":
     build()
     build_train_smoke()
     build_data()
     build_eval()
+    build_bfcl()
