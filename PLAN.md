@@ -398,8 +398,8 @@ Số lượng cụ thể sẽ chốt sau pilot, dự kiến N_chat ≈ N_tool �
 
 ### Giai đoạn 2 — Pilot (E0 + E2 ngắn, **chỉ dùng dev**)
 Mục đích: kiểm tra hạ tầng và kiểm tra **scorer chấm đúng**, **chưa** để kết luận. Pilot không đặt yêu cầu nào về kết quả học: một pilot ngắn không cải thiện gì cũng là kết quả hợp lệ, và không phải lý do để sửa metric. Ngoại lệ duy nhất là **tiêu chí đi/dừng về độ đủ mạnh của model** dưới đây, chốt từ trước pilot: nó chỉ quyết định dùng model nào, không bao giờ dùng để sửa metric hay ngưỡng.
-- [ ] Eval E0 trên dev (base zero-shot / few-shot, các model Instruct)
-- [ ] Chạy E2 với khoảng 10% dữ liệu, 1 seed, eval dev ở các checkpoint
+- [x] Eval E0 trên dev (base zero-shot / few-shot, các model Instruct)
+- [x] Chạy E2 với khoảng 10% dữ liệu, 1 seed, eval dev ở các checkpoint (EXPERIMENTS.md, "Pilot: E2 10%")
 - [ ] Đo: thời gian train mỗi 1k mẫu, thời gian eval mỗi checkpoint, bộ nhớ GPU
 - [ ] Kiểm tra bằng mắt: mask đúng, model dừng đúng `<|im_end|>`, parser không bỏ sót
 - [ ] **Kiểm tra độ nhạy của scorer** bằng một bộ output **dựng có chủ đích** cho từng nhóm: output đúng, và output mắc từng lỗi đã biết (sai tên tool, thiếu hoặc thừa tham số, sai kiểu dữ liệu, JSON hỏng, gọi tool khi không cần, hỏi lại sai tham số, trả lời phủ định giá trị đúng…). Mỗi lỗi phải bị chấm sai, mỗi output đúng phải được chấm đúng.

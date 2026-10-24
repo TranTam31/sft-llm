@@ -127,3 +127,51 @@ Server trả `result: true`; đã lấy danh sách công cụ và gọi `get_cel
 - `clarify_correct` và `grounded_correct` chấm trên toàn bộ output, nên được cộng cả phần chữ của lượt giả. Ví dụ base zero-shot được tính đúng chỉ vì lặp lại câu hỏi của user (có dấu `?` và tên tham số). Một phần điểm few-shot là thật: model chép mẫu "Sure. What is the …?" của ví dụ thứ ba, nhưng phần đuôi vẫn là lượt giả.
 
 **Quyết định (người dùng chọn, ghi ở PLAN 3.3):** `clarify_correct` và `grounded_correct` chỉ tính đúng khi output dừng bằng `<|im_end|>`. Ba lần chạy được chấm lại từ `outputs.jsonl` bằng `python -m src.eval.run_eval --rescore results/e0/<checkpoint>`, không sinh lại. Base về 0 ở cả hai metric; 360M-Instruct mất một mẫu clarify ở T-seen (bị cắt ở 256 token). `role_break_rate` vẫn không bắt được lượt giả của base; chỉ số dừng (`stop_rate`, `truncated_rate`) là nơi phản ánh hành vi này.
+
+## 2026-10-24 — Pilot: E2 10%, eval dev theo checkpoint
+
+**Loại hoạt động:** pilot (PLAN §6, Giai đoạn 2), chỉ dùng dev. Mục đích là kiểm vòng train → snapshot → eval chạy đúng; chưa đọc kết luận.
+
+**Thiết lập:** commit `1dcfecb`, source bundle `bfa69889…`, notebook `06_pilot`, Colab T4. `configs/e2_pilot.yaml` kế thừa `train_base.yaml`:
+- 10% đầu của D_chat và D_tool (1000 + 1000 mẫu, hash như `data/TRAIN.md`), E2 trộn, 2 epoch, seed 0;
+- 125 step, batch hiệu dụng 32 (8 × 4), lr 2e-5, cosine, warmup 3%, fp16 AMP, gradient checkpointing;
+- 6 snapshot fp32 ở các mốc 25k / 50k / 100k / 200k / 400k token assistant và ở step cuối.
+
+Repo run: `trantam31/smollm2-360m-e2-pilot` (private), có snapshot, `last-checkpoint/`, `order.json`, `metrics.json` và `results/`. Kết quả tải về `results/e2_pilot/` (git-ignore).
+
+**Tài nguyên:**
+- Bộ nhớ GPU đỉnh 11.07 GiB.
+- Cell train mất 2048 giây. Con số này gồm cả lưu và đẩy 6 snapshot (mỗi cái 1.45 GB), 2 checkpoint đầy đủ và 6 lượt val loss, nên chưa phải tốc độ train thuần.
+- Eval dev cộng P (704 prompt) mất 280–321 giây mỗi snapshot.
+
+**Val loss** (chat / tool seen / tool unseen):
+
+| step | chat | tool seen | tool unseen |
+|---|---|---|---|
+| 5 | 1.282 | 0.883 | 0.846 |
+| 9 | 1.186 | 0.608 | 0.572 |
+| 19 | 1.122 | 0.403 | 0.381 |
+| 37 | 1.057 | 0.338 | 0.319 |
+| 76 | 1.028 | 0.309 | 0.291 |
+| 125 | 1.023 | 0.304 | 0.286 |
+
+**Metric dev** (điểm ước lượng, chưa có CI; mỗi ô là T-seen / T-unseen; base zero-shot ở E0 bằng 0 với mọi metric trừ `decision_bacc` = 0.5):
+
+| step | token assistant | stop_rate | format_valid | call_exact | call_exact Single | decision_bacc | false_call_rate | clarify_correct | grounded_correct | call_exact rename (vô nghĩa / đồng nghĩa) | stop C |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 5 | 29k | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0.50 / 0.50 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 |
+| 9 | 51k | 0 / 0 | 0.06 / 0.07 | 0.02 / 0.05 | 0.03 / 0.09 | 0.64 / 0.63 | 0.06 / 0.06 | 0 / 0 | 0 / 0 | 0 / 0.01 | 0 |
+| 19 | 106k | 0.51 / 0.60 | 0.44 / 0.55 | 0.10 / 0.23 | 0.24 / 0.48 | 0.67 / 0.64 | 0.67 / 0.70 | 0 / 0 | 0.03 / 0 | 0.05 / 0.06 | 0.24 |
+| 37 | 203k | 0.93 / 0.96 | 0.96 / 0.95 | 0.40 / 0.52 | 0.48 / 0.76 | 0.80 / 0.76 | 0.39 / 0.45 | 0 / 0 | 0.91 / 0.79 | 0.25 / 0.30 | 0.76 |
+| 76 | 406k | 0.95 / 0.94 | 0.97 / 0.95 | 0.43 / 0.58 | 0.48 / 0.76 | 0.80 / 0.86 | 0.39 / 0.27 | 0.09 / 0.15 | 0.91 / 0.79 | 0.32 / 0.38 | 0.76 |
+| 125 | 672k | 0.95 / 0.96 | 0.98 / 0.95 | 0.47 / 0.61 | 0.48 / 0.76 | 0.82 / 0.86 | 0.36 / 0.27 | 0.12 / 0.15 | 0.88 / 0.82 | 0.34 / 0.40 | 0.72 |
+
+Snapshot cuối: perplexity wikitext-2 là 13.19 (base 13.01, 360M-Instruct 14.50); KL tới base là 0.011 nat/token (360M-Instruct là 0.148).
+
+**Ghi chú cho các bước còn lại của pilot (chưa phải kết luận):**
+- **Vòng chạy:** chạy trọn từ đầu đến cuối. Thứ tự mẫu, mốc snapshot và số token khớp với lúc chạy thử dữ liệu ở máy.
+- **Định dạng và cách dừng:** cùng xuất hiện quanh 100k–200k token. Lúc đó `false_call_rate` vọt lên 0.67–0.70 ở step 19 rồi giảm, gần với dạng mà H2 mô tả. Nhưng đây là một seed và chưa có CI.
+- **Missing-info yếu nhất:** `clarify_correct` ≤ 0.15. Pilot chỉ có khoảng 70 mẫu Missing-info (D_tool chỉ có 694 câu khác nhau). Cần xem output trước khi đọc tiêu chí đi/dừng (b).
+- **T-unseen cao hơn T-seen ở `call_exact`** (Single: 0.76 so với 0.48). Pool unseen nhiều bài tính toán với lời gọi đơn giản, nên chưa thể hiểu là "tổng quát hóa tốt". Cần xem output và phần so khớp theo độ khó (PLAN 4.2 ý 5).
+- **Bộ C bị cắt nhiều:** 24–28% câu trả lời chạm `max_new_tokens` = 256, vì câu trả lời chat của SmolTalk dài. `stop_rate` của C vì vậy bị chặn trên bởi cấu hình eval chứ không phải hành vi (PLAN 2.4). Cần bàn trước khi khóa giao thức: tăng `max_new_tokens` cho C, hoặc báo `stop_rate` C chỉ trên phần không bị cắt.
+- **Chưa làm:** bootstrap CI (cần cho tiêu chí đi/dừng), chấm tay 50 output, bộ output dựng có chủ đích, kiểm resume ở quy mô thật, đo thời gian train thuần, và sweep lr.
