@@ -514,6 +514,89 @@ for name, model, options in MODELS:
     write_notebook("05_eval.ipynb", cells, digest)
 
 
+def build_pilot():
+    encoded, digest = source_bundle()
+    cells = [
+        cell("markdown", """# Pilot E2 — train và eval theo checkpoint
+Train E2 (D_chat và D_tool trộn ngẫu nhiên) trên 10% mỗi tập, 1 seed (`configs/e2_pilot.yaml`), rồi chấm mọi snapshot trên **dev** (PLAN 6, Giai đoạn 2). Snapshot chỉ gồm trọng số, lưu ở nơi số token assistant cộng dồn chạm 25k, 50k, 100k… và ở step cuối; val loss chat / tool seen / tool unseen tính ở cùng các mốc đó. Checkpoint đầy đủ để resume nằm ở `last-checkpoint/` trên Hub. Dùng runtime **T4 GPU**.
+"""),
+        cell("markdown", "## 1. Cài thư viện"),
+        cell("code", install_code(INFERENCE_PINS + TRAINING_PINS)),
+        cell("markdown", "## 2. Nạp mã nguồn của dự án"),
+        cell("code", bundle_code(encoded, digest)),
+        cell("markdown", "## 3. Kiểm tra mã"),
+        cell("code", TESTS_CODE),
+        cell("markdown", HF_LOGIN_MD + "\nĐiền `DATASET_REPO` (dataset private chứa `eval_sets/` và `train/`) và `HUB_MODEL_ID` (repo model private của run, tạo ở lần push đầu)."),
+        cell("code", '''from google.colab import userdata
+from huggingface_hub import whoami
+
+os.environ["HF_TOKEN"] = userdata.get("HF_TOKEN")
+DATASET_REPO = ""  # ví dụ "your-username/sft-capability-data"
+HUB_MODEL_ID = ""  # ví dụ "your-username/smollm2-360m-e2-pilot"
+print("Logged in as:", whoami()["name"])
+assert DATASET_REPO and HUB_MODEL_ID, "Điền DATASET_REPO và HUB_MODEL_ID trước khi chạy tiếp."
+'''),
+        cell("markdown", "## 5. Tải dev/test, D_chat/D_tool và kiểm hash\nDừng nếu `src.eval.manifest` báo file thiếu hoặc khác; hash của D_chat/D_tool phải khớp `data/TRAIN.md`."),
+        cell("code", '''import hashlib
+from src.eval.run_eval import fetch
+from src.train import fetch_train_sets
+fetch(DATASET_REPO)
+fetch_train_sets(DATASET_REPO, Path("data/train"))
+!python -m src.eval.manifest
+for name in ("d_chat", "d_tool"):
+    print(name, hashlib.sha256(Path(f"data/train/{name}.jsonl").read_bytes()).hexdigest())
+'''),
+        cell("markdown", """## 6. Train
+Bị ngắt giữa chừng thì chạy lại cell này với `RESUME = "hub"`: train tiếp từ `last-checkpoint/` trên Hub, snapshot đã đẩy lên vẫn còn. In ra thời gian train mỗi 1000 mẫu và bộ nhớ GPU đỉnh (PLAN 6).
+"""),
+        cell("code", '''import json
+RUN, CONFIG, RESUME = "e2_pilot", "configs/e2_pilot.yaml", ""
+resume = f"--resume {RESUME}" if RESUME else ""
+!python -m src.train --config {CONFIG} --hub-model-id {HUB_MODEL_ID} --data-repo {DATASET_REPO} {resume}
+metrics = json.loads(Path(f"results/runs/{RUN}/metrics.json").read_text())
+positions = metrics["data"]["positions"]
+print({"global_step": metrics["global_step"], "assistant_tokens_seen": metrics["assistant_tokens_seen"],
+       "train_seconds": round(metrics["train_runtime"]), "seconds_per_1k_samples": round(1000 * metrics["train_runtime"] / positions, 1),
+       "peak_gpu_memory_gib": round(metrics["peak_gpu_memory_gib"], 2)})
+'''),
+        cell("markdown", "## 7. Chấm mọi snapshot trên dev\nSnapshot đã chấm được bỏ qua, nên bị ngắt thì chạy lại cell này."),
+        cell("code", '''!python -m src.eval.run_checkpoints --run {RUN} --hub-model-id {HUB_MODEL_ID} --split dev
+'''),
+        cell("markdown", "## 8. Bảng tóm tắt theo checkpoint\nMetric dev chính và val loss theo số token assistant đã học."),
+        cell("code", '''history = json.loads(Path(f"results/runs/{RUN}/metrics.json").read_text())["log_history"]
+val = {}
+for row in history:
+    for key, value in row.items():
+        if key.startswith("eval_") and key.endswith("_loss"):
+            val.setdefault(row["step"], {})[key[5:-5]] = round(value, 3)
+for folder in sorted(Path(f"results/{RUN}").glob("step-*")):
+    summary = json.loads((folder / "metrics.json").read_text())
+    seen, row = summary["metrics"]["t_seen"], {}
+    for name, result in summary["metrics"].items():
+        row[f"{name}.stop"] = round(result["behaviour"]["stop_rate"], 2)
+        if "tool" in result:
+            row[f"{name}.call_exact"] = round(result["tool"]["call_exact"], 2)
+            row[f"{name}.decision_bacc"] = round(result["tool"]["decision_bacc"], 2)
+    for group, metric in (("missing_info", "clarify_correct"), ("multi_turn", "grounded_correct")):
+        row[f"t_seen.{metric}"] = round(seen["groups"].get(group, {}).get(metric) or 0, 2)
+    step = summary["snapshot"]["step"]
+    print(folder.name, summary["snapshot"]["assistant_tokens_seen"], val.get(step), row)
+'''),
+        cell("markdown", "## 9. Perplexity và KL của snapshot cuối trên wikitext-2"),
+        cell("code", '''final = sorted(Path(f"results/runs/{RUN}/snapshots").glob("step-*"))[-1]
+!python -m src.eval.knowledge --model {final} --device cuda --output results/{RUN}/knowledge-{final.name}.json
+'''),
+        cell("markdown", "## 10. Đẩy kết quả lên Hub\nOutput, metric và log của run lên `results/` của repo model, để tải về máy bằng `huggingface_hub` thay vì in qua notebook."),
+        cell("code", '''from huggingface_hub import upload_folder
+upload_folder(repo_id=HUB_MODEL_ID, folder_path=f"results/{RUN}", path_in_repo=f"results/{RUN}",
+              commit_message=f"{RUN}: dev results")
+upload_folder(repo_id=HUB_MODEL_ID, folder_path=f"results/runs/{RUN}", path_in_repo=f"results/runs/{RUN}",
+              allow_patterns=["metrics.json", "config.json", "order.json"], commit_message=f"{RUN}: train metrics")
+'''),
+    ]
+    write_notebook("06_pilot.ipynb", cells, digest)
+
+
 if __name__ == "__main__":
     build()
     build_train_smoke()
@@ -521,3 +604,4 @@ if __name__ == "__main__":
     build_eval()
     build_bfcl()
     build_checkpoint_eval()
+    build_pilot()

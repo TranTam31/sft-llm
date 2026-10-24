@@ -1,0 +1,7 @@
+# PLAN 6, phase 2 pilot: E2 (D_chat and D_tool shuffled together) on 10% of each, one seed, dev only.
+base: configs/train_base.yaml
+run_name: e2_pilot
+order: mix
+fraction: 0.1
+output_dir: results/runs/e2_pilot
+hub_model_id: null             # e.g. <username>/smollm2-360m-e2-pilot; pass --hub-model-id on Colab

@@ -66,6 +66,38 @@ class TrainLoopTests(unittest.TestCase):
         self.assertEqual(logs[3]["assistant_tokens_seen"], per_epoch)
         self.assertLess(logs[1]["assistant_tokens_seen"], logs[2]["assistant_tokens_seen"])
 
+    def test_sequential_runs_read_the_given_order_and_act_at_scheduled_steps(self):
+        from src.train import make_trainer
+
+        features = synthetic_features()
+        seen, snapshots = [], []
+        trainer = None
+
+        def snapshot(model, state, counter):
+            snapshots.append((state.global_step, counter.assistant_tokens_seen))
+
+        with tempfile.TemporaryDirectory() as folder:
+            trainer = make_trainer(tiny_model(), features, self.config(folder, max_steps=3, save_steps=100),
+                                   pad_token_id=0, sequential=True, schedule=[1, 3], snapshot=snapshot,
+                                   eval_dataset={"chat": features[:2], "tool": features[2:4]})
+            original = trainer.compute_loss
+
+            def recording(model, inputs, **kwargs):
+                if model.training:
+                    seen.append(inputs["input_ids"][:, 0].tolist())
+                return original(model, inputs, **kwargs)
+
+            trainer.compute_loss = recording
+            trainer.train()
+        firsts = [feature["input_ids"][0] for feature in features]
+        self.assertEqual(seen, [firsts[0:2], firsts[2:4], firsts[4:6]])
+        per_feature = [sum(label != -100 for label in feature["labels"]) for feature in features]
+        self.assertEqual(snapshots, [(1, sum(per_feature[:2])), (3, sum(per_feature))])
+        # Each validation set logs its own entry, with its loss under its name.
+        for name in ("chat", "tool"):
+            steps = [entry["step"] for entry in trainer.state.log_history if f"eval_{name}_loss" in entry]
+            self.assertEqual(steps, [1, 3])
+
     def train_steps(self, output_dir, *, max_steps):
         from src.train import make_trainer
 

@@ -1,0 +1,26 @@
+# PLAN 5.1-5.2: training settings every main run (E1, E2, E3…) inherits through `base:`; a run config adds only
+# its name, data order and subset. python -m src.train --config configs/<run>.yaml
+model: base                    # configs/models.yaml key
+data: train_sets               # data/train/d_chat.jsonl + d_tool.jsonl (src.data.train_sets)
+data_dir: data/train
+epochs: 2                      # every example is learned exactly twice (PLAN 5.1)
+seed: 0
+
+max_seq_len: 1024
+per_device_train_batch_size: 8
+gradient_accumulation_steps: 4 # effective batch 32
+learning_rate: 2.0e-5          # default; the pilot's dev sweep picks the final value (PLAN 5.2)
+lr_scheduler_type: cosine
+warmup_ratio: 0.03             # of the whole run: one global schedule across E1's chat -> tool boundary
+weight_decay: 0.0
+max_grad_norm: 1.0
+gradient_checkpointing: true
+
+# Eval snapshots (weights only, fp32) where cumulative assistant tokens reach 25k, 50k, 100k… and at the last step
+# (PLAN 3.7); validation loss on chat / seen-tool / unseen-tool dev conversations at the same steps.
+checkpoint_tokens: {start: 25000, factor: 2}
+val_split: dev
+# Full-state checkpoints for resume (PLAN 5.3); only the newest is kept locally, last-checkpoint/ on the Hub.
+save_steps: 50
+save_total_limit: 1
+logging_steps: 5

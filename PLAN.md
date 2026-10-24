@@ -260,6 +260,7 @@ Trong H1 và H2, "xuất hiện" nghĩa là **t_reach**. t_improve được báo
 - Checkpoint lưu theo thang log của **số token assistant đã học**: tương ứng khoảng step 0, 10, 25, 50, 100, 200, 400, 800, 1600, …, final.
 - Trục x của mọi đường cong là **`assistant_tokens_seen`**, không dùng step, để so sánh được giữa các run có batch hoặc độ dài mẫu khác nhau. Mỗi checkpoint log cả `step`, `tokens_seen` và `assistant_tokens_seen`.
 - Khi train, log (W&B hoặc TensorBoard và CSV): train loss, grad norm, lr, và **val loss tách riêng** cho chat dev và tool dev.
+- *Cách làm (2026-10-24):* thứ tự mẫu của cả run được dựng trước (`src/train_data.py`, ghi `order.json`), nên biết trước số token assistant mỗi step. Snapshot để eval lưu ở step đầu tiên mà token assistant cộng dồn chạm 25k, 50k, 100k… (nhân 2, theo token tuyệt đối nên các run so được với nhau) và ở step cuối. Snapshot chỉ gồm trọng số fp32 (fp16 làm mất ΔW nhỏ), kèm `meta.json`, đẩy lên `snapshots/step-NNNNN/` của repo run. Val loss tính trên các mẫu dev có câu trả lời mẫu, tách chat (C), tool seen và tool unseen, ở cùng các mốc. `python -m src.eval.run_checkpoints` chấm lần lượt mọi snapshot trên dev; notebook `06_pilot` gọi cả hai bước. Pilot E2 10% có 125 step và 6 snapshot (step 5, 9, 19, 37, 76, 125).
 
 ---
 
