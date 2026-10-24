@@ -521,15 +521,21 @@ def offer_tools(offer: dict, members: np.ndarray, rng, *, first=None) -> list:
 
 
 def no_tool_drafts(side: str, offer: dict, prompts: list, prompt_vectors: np.ndarray, requests: list, catalog: dict,
-                   settings: dict, index: GrowingIndex, rng) -> tuple[list, dict]:
-    """Drafts of the three No-tool kinds for one side (PLAN 4.3):
+                   settings: dict, index: GrowingIndex, rng, *, want: int | None = None,
+                   offer_rng=None) -> tuple[list, dict]:
+    """Drafts of the three No-tool kinds for one side (PLAN 4.3), for `want` items (default: test + dev):
     plain — a general-knowledge prompt with tools from the clusters farthest from it;
     related — a prompt close to one cluster with tools from that cluster, so a tool looks relevant but is not needed;
     no_fitting_tool — an xLAM request that needs a tool, offered only tools far from the tools its example offered
     (looked up in `catalog`, text -> (cluster, vector), since they may belong to the other side).
-    Every draft goes to the labelling pass, which checks that no offered tool helps."""
+    Every draft goes to the labelling pass, which checks that no offered tool helps. offer_rng(draft id), when
+    given, draws each offer on its own, so a change elsewhere in the pick does not reshuffle every offer."""
+    def offer_with(draft_id):
+        return offer_rng(draft_id) if offer_rng else rng
+
     ids, centers = centroids(offer)
-    want = settings["test_per_group"] + round(settings["test_per_group"] * settings["dev_fraction"])
+    if want is None:
+        want = settings["test_per_group"] + round(settings["test_per_group"] * settings["dev_fraction"])
     n_hard = round(want * settings["no_tool"]["hard_fraction"] / 2)
     margin = settings["no_tool"]["draft_margin"]
     similarity = prompt_vectors @ centers.T                       # prompt x cluster
@@ -543,7 +549,7 @@ def no_tool_drafts(side: str, offer: dict, prompts: list, prompt_vectors: np.nda
     for prompt, row in picked:
         members = np.flatnonzero(offer["clusters"] == ids[nearest[row]])
         best = members[np.argmax(offer["vectors"][members] @ prompt_vectors[row])]
-        drafts.append(with_id(prompt, {"group": "no_tool", "kind": "related", "tools": offer_tools(offer, members, rng, first=best),
+        drafts.append(with_id(prompt, {"group": "no_tool", "kind": "related", "tools": offer_tools(offer, members, offer_with(f"{side}:{prompt['id']}"), first=best),
                                        "turns": prompt["turns"][:1], "expected_calls": [],
                                        "reference": prompt["turns"][1]["content"],
                                        "draft": {"cluster": int(ids[nearest[row]]), "similarity": round(float(closeness[row]), 3)}},
@@ -559,7 +565,7 @@ def no_tool_drafts(side: str, offer: dict, prompts: list, prompt_vectors: np.nda
         if not len(members):
             skipped["no_far_tool"] += 1
             continue
-        drafts.append(with_id(prompt, {"group": "no_tool", "kind": "plain", "tools": offer_tools(offer, members, rng),
+        drafts.append(with_id(prompt, {"group": "no_tool", "kind": "plain", "tools": offer_tools(offer, members, offer_with(f"{side}:{prompt['id']}")),
                                        "turns": prompt["turns"][:1], "expected_calls": [],
                                        "reference": prompt["turns"][1]["content"], "draft": {"clusters": [int(cluster) for cluster in far]}},
                               side))
@@ -581,7 +587,7 @@ def no_tool_drafts(side: str, offer: dict, prompts: list, prompt_vectors: np.nda
             skipped["no_far_tool"] += 1
             continue
         drafts.append({**request, "group": "no_tool", "kind": "no_fitting_tool",
-                       "tools": offer_tools(offer, np.flatnonzero(mask), rng), "expected_calls": [],
+                       "tools": offer_tools(offer, np.flatnonzero(mask), offer_with(request["id"])), "expected_calls": [],
                        "reference": NO_FITTING_TOOL_REPLY, "draft": {"needed_tool": called}})
     stats["no_fitting_tool"] = {"picked": len(picked), "wanted": n_requests, "skipped": dict(skipped)}
     return drafts, stats

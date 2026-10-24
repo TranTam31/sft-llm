@@ -309,7 +309,9 @@ Ca khó (3b) được tính vào nhóm No-tool khi chấm (đúng = không gọi
 - **Câu hỏi 3b:** lấy câu hỏi xLAM cần tool từ pool seen, cho **cả hai phía**, kèm tool ở cụm xa tool gốc. Pool unseen gần như toàn bài tính toán, mà loại đó model tự làm được.
 - **Rà từng nháp:** đạt khi không tool nào giúp trả lời được. Với 3b còn phải là câu hỏi thật sự cần dữ liệu hoặc hành động bên ngoài. Toàn bộ mẫu dùng trong dev/test đã được rà.
 - **Tỉ lệ nháp bị bỏ:** `related` khoảng 2–9%, vì tool cùng cụm đôi khi làm được việc (giải phương trình, dịch, kiểm ngữ pháp). `no_fitting_tool` khoảng 1/3, vì câu hỏi tự trả lời được.
-- **Hạn chế:** phía unseen có ít cụm không phải tính toán, nên tool trong `plain` unseen lặp lại khá nhiều. Dữ liệu No-tool cho train (khoảng 20% D_tool) chưa dựng, sẽ làm khi dựng D_tool.
+- **Hạn chế:** phía unseen có ít cụm không phải tính toán, nên tool trong `plain` unseen lặp lại khá nhiều.
+
+*Tập train (2026-10-24):* No-tool chiếm 20% D_tool (2000 mẫu: 1334 `plain`, 333 `related`, 333 `no_fitting_tool`), dựng bằng đúng hàm nháp của bộ eval nhưng chỉ dùng tool seen trong pool train, prompt chat ngoài D_chat và câu hỏi xLAM ngoài D_tool. Lọc prompt và kiểm tool gộp làm một lượt gán nhãn: subagent duyệt từng nháp theo tiêu chí ở trên. Nhãn gắn với id cùng tên các tool được đưa ra (`data/train/labels/no_tool.jsonl`, trên Hub ở `train/labels/`), vì nhãn chỉ đúng cho bộ tool mà người duyệt đã thấy. Mỗi nháp có RNG riêng theo id, nên thay đổi ở nhóm khác không xáo lại các nháp. Số liệu nằm trong `data/TRAIN.md`.
 
 ### 4.4 Bài kiểm tra đổi tên (T-rename)
 
@@ -326,7 +328,7 @@ Kết quả được diễn giải là bằng chứng **hỗ trợ** khả năng
 
 - Khử trùng lặp (exact và near-duplicate theo MinHash) giữa train và **mọi** bộ dev/test, kể cả bộ P. Bước tách hiện mới khử trùng train với các pool eval, nên khi dựng D_chat/D_tool phải khử trùng thêm với `eval_sets/p.jsonl`. P không trùng prompt nào của các bộ eval.
 - Áp dụng quy tắc độ dài ở mục 2.5, ghi tỉ lệ bị loại vào `data/REPORT.md`.
-- Tất cả được chuyển về một format chung và lưu thành `data/processed/*.jsonl`. Ghi lại seed và hash cho từng file.
+- Tất cả được chuyển về một format chung và lưu thành `data/processed/*.jsonl`. Ghi lại seed và hash cho từng file. Tập train cố định D_chat/D_tool nằm ở `data/train/{d_chat,d_tool}.jsonl` (`python -m src.data.train_sets`, báo cáo và hash ở `data/TRAIN.md`), vì `data/processed/` đã chứa dữ liệu nguồn đã chuyển đổi.
 - Unit test bao gồm: render template, mask (có `<|im_end|>` của assistant), parser `<tool_call>` (một lời gọi, nhiều lời gọi, JSON hỏng), và scorer AST.
 
 ---
