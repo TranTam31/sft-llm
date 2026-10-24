@@ -3,7 +3,7 @@
 - Repo là nguồn sự thật: logic ở `src/`, notebook sinh bằng `python scripts/build_playground_notebook.py`. Colab chỉ là môi trường chạy; kết quả trong runtime phải tải về hoặc đẩy lên Hub/Drive.
 - Test local: `.venv/Scripts/python -m unittest discover -s tests` (venv có torch CPU; máy chỉ đủ RAM cho model test cực nhỏ, model thật chạy trên Colab).
 - Commit theo skill `commit`. Riêng dự án này: message không ghi phase (không `feat(phase1)`); thay đổi phạm vi rộng thì bỏ hẳn phần ngoặc (`feat: …`).
-- Dữ liệu eval (`eval_sets/{test,dev,drafts,labels}/`) bị git-ignore vì rút từ xLAM (gated); bản gốc nằm trên dataset Hub private, thư mục `eval_sets/`. Chỉ `eval_sets/REPORT.md` được commit.
+- Dữ liệu eval (`eval_sets/{test,dev,drafts,labels}/`) bị git-ignore vì rút từ xLAM (gated); bản gốc nằm trên dataset Hub private, thư mục `eval_sets/`. Chỉ `eval_sets/REPORT.md`, `MANIFEST.md` (hash đã đóng băng) và `p.jsonl` (bộ P tự viết, sinh từ `src/eval/probe_set.py`) được commit. Dev/test đã đóng băng: trước khi chạy eval để báo cáo, kiểm bằng `python -m src.eval.manifest`.
 
 ## Kết nối Colab qua MCP
 

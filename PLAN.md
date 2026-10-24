@@ -323,7 +323,7 @@ Kết quả được diễn giải là bằng chứng **hỗ trợ** khả năng
 
 ### 4.5 Quy tắc chung
 
-- Khử trùng lặp (exact và near-duplicate theo MinHash) giữa train và **mọi** bộ dev/test.
+- Khử trùng lặp (exact và near-duplicate theo MinHash) giữa train và **mọi** bộ dev/test, kể cả bộ P. Bước tách hiện mới khử trùng train với các pool eval, nên khi dựng D_chat/D_tool phải khử trùng thêm với `eval_sets/p.jsonl`. P không trùng prompt nào của các bộ eval.
 - Áp dụng quy tắc độ dài ở mục 2.5, ghi tỉ lệ bị loại vào `data/REPORT.md`.
 - Tất cả được chuyển về một format chung và lưu thành `data/processed/*.jsonl`. Ghi lại seed và hash cho từng file.
 - Unit test bao gồm: render template, mask (có `<|im_end|>` của assistant), parser `<tool_call>` (một lời gọi, nhiều lời gọi, JSON hỏng), và scorer AST.
@@ -386,10 +386,11 @@ Số lượng cụ thể sẽ chốt sau pilot, dự kiến N_chat ≈ N_tool �
 ### Giai đoạn 1 — Dữ liệu và bộ eval
 - [x] Tải và chuyển đổi dữ liệu, áp quy tắc độ dài, ghi `data/REPORT.md`
 - [x] Phân cụm nhóm chức năng, tách seen/unseen, khử trùng lặp
-- [ ] Tạo T-rename, viết bộ P bằng tay, gán nhãn hoặc rà nhãn cho Missing-info và Multi-turn
-- [ ] Viết các metric ở mục 3.3–3.4, test trên output viết tay (có cả đúng lẫn sai), kiểm định LLM judge
-- [ ] Cài BFCL và `lm-evaluation-harness`, chạy được trên một model Instruct
-- [ ] **Đóng băng** dev/test: ghi hash vào `eval_sets/MANIFEST.md`
+- [x] Tạo T-rename (hai mức), viết bộ P bằng tay (`src/eval/probe_set.py` → `eval_sets/p.jsonl`), gán nhãn hoặc rà nhãn cho Missing-info và Multi-turn
+- [x] Viết các metric ở mục 3.3, test trên output viết tay (có cả đúng lẫn sai). Không dùng LLM judge (quyết định ở mục 3.3); việc so luật với chấm tay trên 50 output thật dời sang pilot. Phép đo bên trong model (mục 3.4) viết khi có checkpoint.
+- [x] Cài `lm-evaluation-harness` (`src/eval/benchmarks.py`, notebook `03_eval`), chạy được trên SmolLM2-360M-Instruct
+- [ ] Cài BFCL, chạy được trên một model Instruct: chờ tài khoản Colab có GPU, vì BFCL chạy model local qua vLLM/SGLang
+- [x] **Đóng băng** dev/test và P: ghi hash vào `eval_sets/MANIFEST.md` (`python -m src.eval.manifest` để kiểm)
 
 ### Giai đoạn 2 — Pilot (E0 + E2 ngắn, **chỉ dùng dev**)
 Mục đích: kiểm tra hạ tầng và kiểm tra **scorer chấm đúng**, **chưa** để kết luận. Pilot không đặt yêu cầu nào về kết quả học: một pilot ngắn không cải thiện gì cũng là kết quả hợp lệ, và không phải lý do để sửa metric. Ngoại lệ duy nhất là **tiêu chí đi/dừng về độ đủ mạnh của model** dưới đây, chốt từ trước pilot: nó chỉ quyết định dùng model nào, không bao giờ dùng để sửa metric hay ngưỡng.
