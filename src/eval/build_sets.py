@@ -12,8 +12,8 @@ Labelled here, from the data itself:
 - c: held-out SmolTalk chat; the prompt is every turn before the last assistant reply.
 Drafted for a labelling pass, never scored as they are: Missing-info (missing_param candidates) and
 Multi-turn (values from the tool result that the reference answer repeats), plus xLAM requests to rewrite
-without one required value, since Glaive's Missing-info prompts repeat too much. No-tool, the synonym level
-of T-rename and P need written labels and come later (PLAN 4.4). No-tool (PLAN 4.3) is drafted from held-out
+without one required value, since Glaive's Missing-info prompts repeat too much. t_rename_synonym (PLAN 4.4, first
+level) renames t_seen with the labelled rename_synonyms table; P is written by hand. No-tool (PLAN 4.3) is drafted from held-out
 chat the labelling pass kept and from xLAM requests offered only far tools, then checked draft by draft.
 """
 
@@ -194,17 +194,27 @@ def _fresh_name(rng, used: set) -> str:
             return name
 
 
-def rename_item(item: dict, *, seed: int) -> tuple[dict, list]:
-    """Rename every tool to fn_xxx and its top-level parameters to p1, p2… in schema, prompt and calls.
-    Description text is kept. Returns the item and the argument keys the schema did not declare."""
+def synonym_of(synonyms: dict, tool: str, param: str) -> str | None:
+    """A parameter's synonym: the per-tool entry when the shared one does not fit that tool."""
+    return synonyms["params"].get(f"{tool}.{param}", synonyms["params"].get(param))
+
+
+def rename_item(item: dict, *, seed: int, synonyms: dict | None = None) -> tuple[dict, list]:
+    """Rename every tool and its top-level parameters consistently in schema, prompt and calls; description
+    text is kept. Without synonyms: fn_xxx and p1, p2… (nonsense level). With synonyms ({"tools": {name: new},
+    "params": {param or tool.param: new}}, see synonym_table): the labelled names; a name without one stays.
+    Returns the item and the argument keys the schema did not declare."""
     rng = random.Random(f"{seed}:rename:{item['id']}")
     used, tool_map, param_maps, tools = set(), {}, {}, []
     for tool in item["tools"]:
-        new_name = _fresh_name(rng, used)
+        new_name = _fresh_name(rng, used) if synonyms is None else synonyms["tools"].get(tool["name"], tool["name"])
         tool_map[tool["name"]] = new_name
         parameters = dict(tool.get("parameters") or {})
         properties = parameters.get("properties") or {}
-        param_map = {param: f"p{index}" for index, param in enumerate(properties, start=1)}
+        if synonyms is None:
+            param_map = {param: f"p{index}" for index, param in enumerate(properties, start=1)}
+        else:
+            param_map = {param: synonym_of(synonyms, tool["name"], param) or param for param in properties}
         param_maps[tool["name"]] = param_map
         if properties:
             parameters["properties"] = {param_map[param]: spec for param, spec in properties.items()}
@@ -237,8 +247,50 @@ def rename_item(item: dict, *, seed: int) -> tuple[dict, list]:
     meta = {**item["meta"], "renamed_from": item["id"], "tool_map": tool_map}
     if ambiguous:
         meta["ambiguous_params"] = sorted(ambiguous)
-    return {**item, "id": item["id"] + ":rename", "tools": tools, "turns": turns, "expected_calls": calls,
+    suffix = ":rename" if synonyms is None else ":synonym"
+    return {**item, "id": item["id"] + suffix, "tools": tools, "turns": turns, "expected_calls": calls,
             "meta": meta}, undeclared
+
+
+def synonym_table(rows: list) -> dict:
+    """rename_synonyms labels: {"id": "tool:<name>" | "param:<name>" | "param:<tool>.<name>", "synonym": new}."""
+    table = {"tools": {}, "params": {}}
+    for row in rows:
+        kind, name = row["id"].split(":", 1)
+        table["tools" if kind == "tool" else "params"][name] = row["synonym"]
+    return table
+
+
+def _words(name):
+    return set(re.findall(r"[a-z]+|\d+", re.sub(r"([a-z])([A-Z])", r"\1 \2", name).lower()))
+
+
+def synonym_problems(items: list, synonyms: dict) -> Counter:
+    """Every way the synonym table fails the items: a name without a synonym, a synonym equal to or no more
+    than a respelling of the name, and two tools of one item (or two parameters of one tool) sharing one."""
+    problems = Counter()
+    for item in items:
+        new_tools = {}  # Keyed by the old name: a source item may already offer two tools with one name.
+        for tool in item["tools"]:
+            new_tool = synonyms["tools"].get(tool["name"])
+            if new_tool is None:
+                problems[f"tool without synonym: {tool['name']}"] += 1
+            elif _words(new_tool) == _words(tool["name"]):
+                problems[f"tool unchanged: {tool['name']}"] += 1
+            new_tools[tool["name"]] = new_tool or tool["name"]
+            new_params = []
+            for param in ((tool.get("parameters") or {}).get("properties") or {}):
+                new_param = synonym_of(synonyms, tool["name"], param)
+                if new_param is None:
+                    problems[f"parameter without synonym: {param}"] += 1
+                elif _words(new_param) == _words(param):
+                    problems[f"parameter unchanged: {param}"] += 1
+                new_params.append(new_param or param)
+            if len(set(new_params)) < len(new_params):
+                problems[f"parameters share a synonym in {tool['name']}"] += 1
+        if len(set(new_tools.values())) < len(new_tools):
+            problems[f"tools share a synonym in {item['id']}"] += 1
+    return problems
 
 
 # ---- Sampling ----------------------------------------------------------------------------
@@ -338,7 +390,8 @@ def with_id(example: dict, item: dict, set_name: str) -> dict:
 
 # ---- Labelled groups ---------------------------------------------------------------------
 
-LABEL_FILES = ("missing_info_glaive", "missing_info_rewrite", "multi_turn", "no_tool_prompts", "no_tool")
+LABEL_FILES = ("missing_info_glaive", "missing_info_rewrite", "multi_turn", "no_tool_prompts", "no_tool",
+               "rename_synonyms")
 LABELLED_GROUPS = ("missing_info", "multi_turn", "no_tool")
 
 
@@ -423,7 +476,7 @@ def assemble_labelled(drafts: dict, labels: dict, *, n_test: int, n_dev: int,
     draft_ids = {draft["id"] for items in drafts.values() for draft in items}
     # no_tool_prompts is keyed by chat example, not by draft.
     stats["unmatched_labels"] = {name: sum(label["id"] not in draft_ids for label in labels.get(name, []))
-                                 for name in LABEL_FILES if name != "no_tool_prompts"}
+                                 for name in LABEL_FILES if name not in ("no_tool_prompts", "rename_synonyms")}
     return sets, stats
 
 
@@ -610,6 +663,18 @@ def run(pools: dict, tools: list, config: dict, *, labels=None, embed=embed_text
             renamed, missing = rename_item(item, seed=seed)
             undeclared.update(missing)
             sets[split_name]["t_rename_nonsense"].append({**renamed, "set": "t_rename_nonsense"})
+    # Synonym level: labelled names, no randomness and no sampling, so no other set depends on it.
+    synonyms = synonym_table((labels or {}).get("rename_synonyms", []))
+    renamable = [item for split_name in SPLITS for item in sets[split_name]["t_seen"]]
+    synonym_issues = synonym_problems(renamable, synonyms) if synonyms["tools"] else Counter()
+    if synonyms["tools"]:
+        for split_name in SPLITS:
+            for item in sets[split_name]["t_seen"]:
+                renamed, _ = rename_item(item, seed=seed, synonyms=synonyms)
+                sets[split_name]["t_rename_synonym"].append({**renamed, "set": "t_rename_synonym"})
+    for group in CALL_GROUPS:
+        stats["t_rename_synonym"][group] = {"wanted": n_test + n_dev, "skipped": {}, "picked": sum(
+            item["group"] == group for split_name in SPLITS for item in sets[split_name]["t_rename_synonym"])}
 
     n_chat_test = settings["chat_test"]
     chat = [with_id(example, chat_item(example), "c") for example in pools["chat_eval"]]
@@ -712,7 +777,7 @@ def run(pools: dict, tools: list, config: dict, *, labels=None, embed=embed_text
                                                   for cluster in called_clusters(item, cluster_of))
                        for set_name in ("t_seen", "t_unseen") for group in CALL_GROUPS}
     return {"sets": sets, "drafts": drafts, "stats": stats, "available": available, "near": near,
-            "called_clusters": called_by_group, "cluster_cap": cap,
+            "called_clusters": called_by_group, "cluster_cap": cap, "synonym_problems": synonym_issues,
             "dropped_unseen": dropped, "undeclared": undeclared, "unseen_top_tools": called.most_common(15),
             "unseen_clusters": clusters, "n_test": n_test, "n_dev": n_dev, "labelled": labelled_stats,
             "short": short_groups(stats, labelled_stats, n_test + n_dev)}
@@ -721,7 +786,8 @@ def run(pools: dict, tools: list, config: dict, *, labels=None, embed=embed_text
 def short_groups(stats: dict, labelled_stats: dict, want: int) -> list:
     """Every group the eval needs, with fewer samples than wanted; an absent group counts as 0. Draft groups
     share names with the labelled ones but want a margin, so labelled groups are read from labelled_stats."""
-    required = [(stats, set_name, group) for set_name in ("t_seen", "t_unseen") for group in CALL_GROUPS]
+    required = [(stats, set_name, group) for set_name in ("t_seen", "t_unseen", "t_rename_synonym")
+                for group in CALL_GROUPS]
     required += [(stats, "c", "chat")]
     required += [(labelled_stats, set_name, group) for set_name in ("t_seen", "t_unseen") for group in LABELLED_GROUPS]
     short = []
@@ -740,7 +806,7 @@ def render_report(result: dict, config: dict, hashes: dict) -> str:
              f"(PLAN 3.2); bộ C có {settings['chat_test']} mẫu test. Không có prompt nào lặp lại giữa các bộ: "
              "mẫu trùng exact hoặc gần trùng (MinHash, cùng tham số với bước tách) với mẫu đã chọn thì bị bỏ qua.", "",
              "## Số mẫu", "", "| Bộ | Nhóm | Có sẵn | test | dev | Bỏ vì trùng |", "|---|---|---|---|---|---|"]
-    for set_name in ("t_seen", "t_unseen", "t_rename_nonsense", "c"):
+    for set_name in ("t_seen", "t_unseen", "t_rename_nonsense", "t_rename_synonym", "c"):
         groups = sorted({item["group"] for split_name in SPLITS for item in result["sets"][split_name][set_name]})
         for group in groups:
             counts = {split_name: sum(item["group"] == group for item in result["sets"][split_name][set_name])
@@ -791,6 +857,18 @@ def render_report(result: dict, config: dict, hashes: dict) -> str:
               "", f"Tham số trong đáp án mà schema không khai báo, nên giữ tên cũ: {undeclared}"
               + (" (" + ", ".join(f"`{key}`" for key, _ in result["undeclared"].most_common(10)) + ")" if undeclared else "")
               + "."]
+    synonym_items = [item for split_name in SPLITS for item in result["sets"][split_name].get("t_rename_synonym", [])]
+    if synonym_items:
+        renamed_tools = {old: new for item in synonym_items for old, new in item["meta"]["tool_map"].items()}
+        lines += ["", "## T-rename mức đồng nghĩa (PLAN 4.4)", "",
+                  "Tool và tham số cấp ngoài cùng đổi sang tên cùng nghĩa theo bảng `rename_synonyms` do session gán "
+                  "(một tên tham số dùng chung một tên mới, trừ khi tool đó có tên riêng); description giữ nguyên, tên "
+                  "dạng định danh trong prompt cũng được thay. Bảng bị từ chối nếu thiếu tên, tên mới chỉ là cách viết "
+                  "khác của tên cũ, hoặc hai tool (hai tham số của một tool) trong một mẫu trùng tên mới.", "",
+                  f"Tool được đổi tên: {len(renamed_tools)}. Lỗi bảng: "
+                  + (", ".join(f"{name} ({count})" for name, count in result["synonym_problems"].most_common(10))
+                     or "0") + ".", "",
+                  "Ví dụ: " + ", ".join(f"`{old}` → `{new}`" for old, new in sorted(renamed_tools.items())[:8]) + "."]
     labelled = result["labelled"]
     if labelled:
         lines += ["", "## Missing-info và Multi-turn (nhãn do session gán)", "",
@@ -900,6 +978,8 @@ def main():
     (output_dir / "REPORT.md").write_text(render_report(result, config, hashes), encoding="utf-8")
     for name, digest in hashes.items():
         print(f"[eval_sets] {name}: {digest[:12]}", flush=True)
+    if result["synonym_problems"]:
+        sys.exit(f"[eval_sets] synonym table problems: {dict(result['synonym_problems'].most_common(20))}; not uploaded")
     if result["short"]:
         sys.exit(f"[eval_sets] groups short of samples: {result['short']} (see {output_dir}/REPORT.md); not uploaded")
     if args.push_to:

@@ -23,6 +23,9 @@ Seed 0. Mỗi nhóm có 100 mẫu test và 33 mẫu dev (PLAN 3.2); bộ C có 1
 | t_rename_nonsense | parallel | – | 100 | 33 | – |
 | t_rename_nonsense | select | – | 100 | 33 | – |
 | t_rename_nonsense | single | – | 100 | 33 | – |
+| t_rename_synonym | parallel | – | 100 | 33 | – |
+| t_rename_synonym | select | – | 100 | 33 | – |
+| t_rename_synonym | single | – | 100 | 33 | – |
 | c | chat | 1000 | 150 | 50 | – |
 
 ## Lọc T-unseen (PLAN 4.2 ý 6)
@@ -67,6 +70,14 @@ Tool đổi thành `fn_xxx`, tham số cấp ngoài cùng thành `p1, p2…` the
 
 Tham số trong đáp án mà schema không khai báo, nên giữ tên cũ: 0.
 
+## T-rename mức đồng nghĩa (PLAN 4.4)
+
+Tool và tham số cấp ngoài cùng đổi sang tên cùng nghĩa theo bảng `rename_synonyms` do session gán (một tên tham số dùng chung một tên mới, trừ khi tool đó có tên riêng); description giữ nguyên, tên dạng định danh trong prompt cũng được thay. Bảng bị từ chối nếu thiếu tên, tên mới chỉ là cách viết khác của tên cũ, hoặc hai tool (hai tham số của một tool) trong một mẫu trùng tên mới.
+
+Tool được đổi tên: 666. Lỗi bảng: 0.
+
+Ví dụ: `active_listings` → `current_rentals`, `actors_get_interesting_jobs` → `performer_notable_roles`, `actors_list_most_popular_celebs` → `stars_top_famous_people`, `addresses` → `street_locations`, `advanced_chart` → `detailed_price_graph`, `air_quality_forecasts` → `pollution_outlook`, `airports_direct_routes_for_an_airport` → `nonstop_paths_from_terminal`, `albums_get_related_artist` → `record_similar_musician`.
+
 ## Missing-info và Multi-turn (nhãn do session gán)
 
 Nhãn nằm ở `eval_sets/labels/` (dataset trên Hub). Missing-info lấy cùng số mẫu Glaive ở hai phía, phần còn lại là câu hỏi xLAM viết lại cho thiếu một tham số bắt buộc, để seen và unseen có cùng tỉ lệ nguồn; test và dev giữ tỉ lệ đó. Multi-turn nhắm cùng một tỉ lệ ở hai phía: lấy số mẫu cần đọc kết quả tool bằng mức phía nghèo hơn có, phần còn lại là mẫu tự tính được (đáp án suy ra được từ câu hỏi, đánh dấu `meta.derivable` để tính điểm phụ trên phần còn lại); phía thiếu mẫu tự tính được thì bù bằng mẫu cần đọc kết quả tool. Đáp án đúng của Missing-info là không gọi tool.
@@ -108,6 +119,7 @@ Chưa phải bộ eval: cần một lượt gán nhãn rồi mới chia dev/test
 |---|---|
 | `dev/c.jsonl` | `8b29f970f9a5c05802c85c769c7df9585f1fdef9e0651e6726e50db6bf1751cf` |
 | `dev/t_rename_nonsense.jsonl` | `7d2f6263ca7ec1b19d6d253ac5b3bc365d72686fb6da6a136c5cc565a46a3d5c` |
+| `dev/t_rename_synonym.jsonl` | `23594a3627a495207b398dc848b1794d19e8f81cbc08475ea87bd8c6a31941f3` |
 | `dev/t_seen.jsonl` | `41fd2763f7f9a34189788a0e590df04284c81373b7cf564f6c13fcbf5d73b7e2` |
 | `dev/t_unseen.jsonl` | `6cb5e3f086da57bc104164979ba49d2190b19915d2c36ce9d15b753abdcc9309` |
 | `drafts/t_seen_missing_info.jsonl` | `ec2ed01a5b96cdfe7f7ddaf614c3d3c7505dd43821163909dda80663e44a6c1e` |
@@ -120,5 +132,6 @@ Chưa phải bộ eval: cần một lượt gán nhãn rồi mới chia dev/test
 | `drafts/t_unseen_no_tool.jsonl` | `a117c68afc5ec67eb7d3d31eccdb590f5587fbb0919ebdc2752eac10c2db01ae` |
 | `test/c.jsonl` | `82f99eb714d59864c789835aa046f6048d7d5cd603a1280be502d57670651be3` |
 | `test/t_rename_nonsense.jsonl` | `3dc7e341e92e55b26ee7648fb1781d5f4e66adc8f0573becc86b96e0881b0903` |
+| `test/t_rename_synonym.jsonl` | `a6d4b62e3cea59cb93c52ba7665da65bb0fb995587ce16da8501c89575359d26` |
 | `test/t_seen.jsonl` | `60516ada5b16f65708083af416929dff29eedf680ae195a6e034bb66a0b9e820` |
 | `test/t_unseen.jsonl` | `6e4823fe89181e1af0d05325bf4bca22f1605a701b6ed98c8ac3dfd6bd559630` |

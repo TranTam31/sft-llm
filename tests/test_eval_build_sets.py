@@ -8,7 +8,8 @@ import numpy as np
 from src.data.split import tool_text
 from src.eval.build_sets import (NO_FITTING_TOOL_REPLY, GrowingIndex, apply_rewrite, assemble_labelled, assemble_no_tool,
                                  call_item, called_clusters, cap_clusters, chat_item, clarify_draft, multi_turn_draft,
-                                 near_seen_tools, pick, rename_item, rewrite_draft, run)
+                                 near_seen_tools, pick, rename_item, rewrite_draft, run, synonym_problems,
+                                 synonym_table)
 from src.eval.scorers import score_clarify, score_tool_sample
 from src.tool_calls import format_tool_calls, format_tool_responses
 
@@ -297,6 +298,39 @@ class RenameTests(unittest.TestCase):
         _, undeclared = rename_item(item, seed=0)
         self.assertEqual(undeclared, ["get_weather.extra"])
 
+    SYNONYMS = [{"id": "tool:get_weather", "synonym": "fetch_forecast"}, {"id": "tool:search", "synonym": "look_up"},
+                {"id": "param:city", "synonym": "location"}, {"id": "param:unit", "synonym": "temperature_scale"},
+                {"id": "param:search.city", "synonym": "town"}]
+
+    def test_synonym_level_uses_the_labelled_names(self):
+        synonyms = synonym_table(self.SYNONYMS)
+        renamed, undeclared = rename_item(self.item(), seed=0, synonyms=synonyms)
+        self.assertEqual(undeclared, [])
+        self.assertEqual(renamed["id"], "t_seen:x:synonym")
+        self.assertEqual(renamed["expected_calls"],
+                         [{"name": "fetch_forecast", "arguments": {"location": "Hanoi", "temperature_scale": "c"}}])
+        self.assertEqual([tool["name"] for tool in renamed["tools"]], ["fetch_forecast", "look_up"])
+        # The per-tool entry wins over the shared one.
+        self.assertEqual(list(renamed["tools"][1]["parameters"]["properties"]), ["town"])
+        self.assertEqual(renamed["tools"][0]["parameters"]["required"], ["location", "temperature_scale"])
+        self.assertEqual(renamed["turns"][0]["content"], "Use fetch_forecast for the city Hanoi.")
+        self.assertEqual(synonym_problems([self.item()], synonyms), Counter())
+        # The nonsense level is unchanged by the new argument.
+        self.assertEqual(rename_item(self.item(), seed=0)[0]["meta"]["tool_map"]["get_weather"][:3], "fn_")
+
+    def test_synonym_table_problems_are_reported(self):
+        rows = [{"id": "tool:get_weather", "synonym": "getWeather"}, {"id": "tool:search", "synonym": "look_up"},
+                {"id": "param:unit", "synonym": "scale"}, {"id": "param:search.city", "synonym": "scale"}]
+        problems = synonym_problems([self.item()], synonym_table(rows))
+        self.assertEqual(problems, Counter({"tool unchanged: get_weather": 1, "parameter without synonym: city": 1}))
+        clash = synonym_table([*self.SYNONYMS, {"id": "tool:search", "synonym": "fetch_forecast"},
+                               {"id": "param:unit", "synonym": "location"}])
+        self.assertEqual(synonym_problems([self.item()], clash),
+                         Counter({"parameters share a synonym in get_weather": 1, "tools share a synonym in t_seen:x": 1}))
+        # Two tools that already share a name in the source keep sharing one: not a clash.
+        twice = {**self.item(), "tools": [WEATHER, WEATHER, tool("search")]}
+        self.assertEqual(synonym_problems([twice], synonym_table(self.SYNONYMS)), Counter())
+
 
 class SamplingTests(unittest.TestCase):
     def test_pick_skips_repeated_prompts(self):
@@ -392,7 +426,9 @@ class RunTests(unittest.TestCase):
         # The fixture only has select requests on the seen side and single ones on the unseen side, and no
         # labels: every absent group is reported, so nothing is uploaded.
         self.assertEqual(result["short"], [("t_seen", "single", 0), ("t_seen", "parallel", 0), ("t_unseen", "select", 0),
-                                           ("t_unseen", "parallel", 0), ("t_seen", "missing_info", 0),
+                                           ("t_unseen", "parallel", 0), ("t_rename_synonym", "single", 0),
+                                           ("t_rename_synonym", "select", 0), ("t_rename_synonym", "parallel", 0),
+                                           ("t_seen", "missing_info", 0),
                                            ("t_seen", "multi_turn", 0), ("t_seen", "no_tool", 0),
                                            ("t_unseen", "missing_info", 0), ("t_unseen", "multi_turn", 0),
                                            ("t_unseen", "no_tool", 0)])
@@ -430,6 +466,25 @@ class RunTests(unittest.TestCase):
         self.assertEqual(capped["called_clusters"][("t_unseen", "single")], Counter({2: 2, 4: 2}))
         self.assertEqual(capped["short"], plain_run["short"])
         self.assertEqual(capped["stats"]["t_unseen"]["single"]["picked"], 4)
+
+    def test_synonym_level_renames_t_seen_and_leaves_the_rest(self):
+        plain_run = run(self.pools, self.tools, self.config, embed=fake_embed)
+        rows = [{"id": "tool:get_weather", "synonym": "fetch_forecast"}, {"id": "tool:stock_price", "synonym": "share_quote"},
+                {"id": "param:city", "synonym": "location"}, {"id": "param:ticker", "synonym": "symbol"}]
+        result = run(self.pools, self.tools, self.config, labels={"rename_synonyms": rows}, embed=fake_embed)
+        self.assertEqual(result["synonym_problems"], Counter())
+        for split_name in ("test", "dev"):
+            for name in ("t_seen", "t_unseen", "t_rename_nonsense", "c"):
+                self.assertEqual(result["sets"][split_name][name], plain_run["sets"][split_name][name])
+            synonym = result["sets"][split_name]["t_rename_synonym"]
+            self.assertEqual([item["meta"]["renamed_from"] for item in synonym],
+                             [item["id"] for item in result["sets"][split_name]["t_seen"]])
+            self.assertTrue(all(call["name"] == "fetch_forecast" and list(call["arguments"]) == ["location"]
+                                for item in synonym for call in item["expected_calls"]))
+        self.assertEqual(result["drafts"], plain_run["drafts"])
+        self.assertNotIn(("t_rename_synonym", "select", 0), result["short"])
+        missing = run(self.pools, self.tools, self.config, labels={"rename_synonyms": rows[1:]}, embed=fake_embed)
+        self.assertEqual(missing["synonym_problems"], Counter({"tool without synonym: get_weather": 4}))
 
     def test_labelled_groups_are_checked_on_labels_not_on_the_draft_margin(self):
         cities = ["Hanoi", "Hue", "Da Nang", "Can Tho", "Vinh", "Sapa", "Dalat", "Quy Nhon", "Nha Trang", "Ha Long"]

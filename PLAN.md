@@ -317,6 +317,8 @@ Lấy T-seen, đổi tên tool và tên tham số **một cách nhất quán** t
 - **Đổi sang từ đồng nghĩa:** ví dụ `get_weather → fetch_forecast`, `city → location`.
 - **Đổi sang tên vô nghĩa:** ví dụ `get_weather → fn_k3x`, `city → p1`. Phần description vẫn giữ nguyên.
 
+*Mức đồng nghĩa (2026-10-24):* session gán một lần bảng `rename_synonyms` (nhãn trên Hub, `eval_sets/labels/`) cho mọi tên trong single/select/parallel của T-seen: 666 tool và 685 tham số. Mỗi tên tham số có một tên mới dùng chung. Có 18 chỗ ghi đè riêng theo tool, khi nghĩa khác nhau (ví dụ `b` là cận trên của tích phân nhưng là kênh xanh lam trong `rgb_to_hsl`). Tên mới đổi các từ chính, chỉ giữ tên riêng và con số (`tiktok`, `54`). Bộ được dựng từ đúng các mẫu T-seen, nên so theo cặp được với T-seen và T-rename mức vô nghĩa. Bước dựng chặn upload khi bảng thiếu tên, khi tên mới chỉ là cách viết khác của tên cũ (cùng tập từ), hoặc khi hai tên gốc khác nhau trong một mẫu nhận cùng một tên mới. Mẫu nguồn vốn có hai tool trùng tên thì được giữ trùng.
+
 Kết quả được diễn giải là bằng chứng **hỗ trợ** khả năng sử dụng schema và cho biết **mức phụ thuộc vào tên tool**, không phải phân định dứt khoát. Lý do: điểm giảm có thể đến từ việc tên vô nghĩa khó tokenize hoặc khó sao chép, và điểm giữ nguyên cũng chưa loại trừ việc model nhớ phần mô tả hoặc cấu trúc schema.
 
 ### 4.5 Quy tắc chung
