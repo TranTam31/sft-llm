@@ -93,6 +93,7 @@ eval_sets:
   draft_margin: 2.5              # drafts per group = margin x (test + dev), room for the labelling pass to drop some
   rewrite_drafts: {t_seen: 160, t_unseen: 100}  # xLAM requests drafted for Missing-info rewrites (Glaive repeats its prompts)
   multi_turn_extra_drafts: {t_unseen: 3000}  # drawn last; picking stops when the pool runs out of new prompts
+  unseen_cluster_cap: 0.4        # T-unseen single/select/parallel: at most 40% of a split per called cluster (cluster 29 is most of the pool)
   no_tool:                       # PLAN 4.3, drafted last from held-out chat and xLAM requests
     hard_fraction: 0.3333        # related + no_fitting_tool, split evenly; the rest is plain
     draft_margin: 2.0            # drafts per kind = margin x the kind's share of test + dev

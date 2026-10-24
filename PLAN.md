@@ -284,6 +284,8 @@ Tách theo tên tool là chưa đủ, vì có những tool cùng chức năng nh
 5. Khi so sánh seen và unseen, báo cáo thêm kết quả sau khi **khớp theo độ khó** (stratify theo số tham số và số tool trong danh sách), để tách riêng ảnh hưởng của độ khó.
 6. Embedding không tách sạch tuyệt đối các tool cùng chủ đề. Vì vậy khi dựng T-unseen từ pool `unseen_eval`, **bỏ mọi mẫu có tool nằm sát một tool seen** (cosine ≥ 0,85, cùng embedder). Bước lọc này chỉ áp dụng cho eval, không lấy thêm dữ liệu của train.
 
+*Trần mỗi cụm cho T-unseen (2026-10-24):* pool `unseen_eval` phần lớn là cụm 29 (bài tính toán: sắp xếp, độ lệch chuẩn, số chính phương…), nên trước đây khoảng 60–73% mẫu single/select/parallel của T-unseen gọi tool cụm 29. Từ nay mỗi cụm chiếm tối đa **40%** mẫu của một nhóm, tính riêng test và dev, theo cụm của **tool được gọi** (tool nhiễu không tính). Mẫu đã chọn được giữ nếu còn trong trần. Phần thiếu được rút thêm từ pool sau mọi bước khác, nên nháp, nhãn và các bộ khác không đổi. Pool đủ mẫu: ngoài cụm 29, select còn khoảng 390 mẫu, single khoảng 540, parallel khoảng 940. Missing-info và Multi-turn không đặt trần, vì đã dưới 40% (38% và 26%). Kết quả nằm trong `eval_sets/REPORT.md`, mục "Cụm của tool được gọi".
+
 Cách làm thực tế (cụm ghim sau khi duyệt tay, khối cụm, các cụm tạp bị loại, các luật kéo tool sang unseen) và kết quả kiểm tra nằm trong `configs/data.yaml` (mục `split`) và `data/SPLIT.md`.
 
 ### 4.3 Dữ liệu No-tool (cho cả train và eval)

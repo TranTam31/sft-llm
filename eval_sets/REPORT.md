@@ -38,9 +38,28 @@ Seed 0. Mỗi nhóm có 100 mẫu test và 33 mẫu dev (PLAN 3.2); bộ C có 1
 | select | 39 |
 | single | 61 |
 
-Cụm của các mẫu T-unseen còn lại (dev + test, một mẫu tính cho mọi cụm của nó): cụm 1: 1, cụm 2: 13, cụm 4: 58, cụm 7: 23, cụm 14: 69, cụm 16: 4, cụm 22: 1, cụm 23: 47, cụm 26: 1, cụm 28: 2, cụm 29: 359, cụm 33: 4, cụm 34: 3, cụm 35: 25, cụm 36: 85, cụm 37: 1, cụm 38: 4, cụm 42: 2, cụm 46: 67, cụm 47: 3, cụm 48: 1, cụm 49: 5.
+Cụm của các mẫu T-unseen còn lại (dev + test, một mẫu tính cho mọi cụm của nó): cụm 1: 1, cụm 2: 13, cụm 4: 85, cụm 7: 27, cụm 14: 108, cụm 16: 4, cụm 22: 1, cụm 23: 70, cụm 26: 1, cụm 28: 2, cụm 29: 264, cụm 33: 4, cụm 34: 4, cụm 35: 25, cụm 36: 102, cụm 37: 1, cụm 38: 4, cụm 42: 2, cụm 46: 67, cụm 47: 3, cụm 48: 1, cụm 49: 5.
 
-Tool được gọi nhiều nhất trong T-unseen test: `validate_email` (16), `is_power` (16), `draw_cards` (14), `find_majority_element` (12), `bacterial_growth` (11), `chi_square_independence_test` (11), `calculate_standard_deviation` (11), `is_valid_email` (9), `is_power_of_two` (9), `numerical_derivative` (8), `get_range` (8), `find_next_greater_element` (8), `binary_addition` (8), `sort_numbers` (8), `is_anagram_phrase` (8).
+Tool được gọi nhiều nhất trong T-unseen test: `validate_email` (19), `emailvalidation` (12), `is_valid_palindrome` (12), `is_power` (10), `is_valid_email` (10), `draw_cards` (9), `calculate_standard_deviation` (9), `is_anagram_phrase` (9), `is_rotation` (9), `runner_up` (9), `find_majority_element` (8), `email_verifier` (8), `bacterial_growth` (7), `find_next_greater_element` (7), `chi_square_independence_test` (7).
+
+## Cụm của tool được gọi
+
+T-unseen đặt trần 40% mẫu mỗi cụm cho từng nhóm, tính riêng test và dev: pool unseen phần lớn là một cụm tính toán (cụm 29). Mẫu đã chọn được giữ nếu còn trong trần, phần thiếu rút thêm từ pool sau mọi bước khác, nên nháp và các bộ khác không đổi. Một mẫu tính cho mọi cụm của các tool nó gọi (tool nhiễu không tính); dev + test.
+
+| Bộ | Nhóm | Ba cụm nhiều nhất (số mẫu) | Cụm lớn nhất / số mẫu |
+|---|---|---|---|
+| t_seen | parallel | cụm 49: 28, cụm 37: 20, cụm 26: 17 | 21% |
+| t_seen | select | cụm 37: 15, cụm 38: 13, cụm 49: 12 | 11% |
+| t_seen | single | cụm 28: 12, cụm 47: 12, cụm 38: 11 | 9% |
+| t_unseen | parallel | cụm 29: 53, cụm 14: 34, cụm 23: 28 | 40% |
+| t_unseen | select | cụm 29: 53, cụm 14: 23, cụm 36: 22 | 40% |
+| t_unseen | single | cụm 29: 53, cụm 36: 31, cụm 14: 20 | 40% |
+
+| Nhóm | Mẫu cũ giữ lại | Rút thêm | Có sẵn trong pool theo cụm (ba cụm lớn nhất) |
+|---|---|---|---|
+| parallel | 105 | 28 | cụm 29: 1635, cụm 14: 383, cụm 23: 277 (pool có 2570 mẫu) |
+| select | 98 | 35 | cụm 29: 658, cụm 36: 124, cụm 14: 115 (pool có 1047 mẫu) |
+| single | 91 | 42 | cụm 29: 1028, cụm 36: 209, cụm 14: 132 (pool có 1567 mẫu) |
 
 ## T-rename mức tên vô nghĩa (PLAN 4.4)
 
@@ -90,7 +109,7 @@ Chưa phải bộ eval: cần một lượt gán nhãn rồi mới chia dev/test
 | `dev/c.jsonl` | `8b29f970f9a5c05802c85c769c7df9585f1fdef9e0651e6726e50db6bf1751cf` |
 | `dev/t_rename_nonsense.jsonl` | `7d2f6263ca7ec1b19d6d253ac5b3bc365d72686fb6da6a136c5cc565a46a3d5c` |
 | `dev/t_seen.jsonl` | `41fd2763f7f9a34189788a0e590df04284c81373b7cf564f6c13fcbf5d73b7e2` |
-| `dev/t_unseen.jsonl` | `b482ad67f7f4beba8e39cfd25eea60c2b03994ae72473ccc66ee570a7c353172` |
+| `dev/t_unseen.jsonl` | `6cb5e3f086da57bc104164979ba49d2190b19915d2c36ce9d15b753abdcc9309` |
 | `drafts/t_seen_missing_info.jsonl` | `ec2ed01a5b96cdfe7f7ddaf614c3d3c7505dd43821163909dda80663e44a6c1e` |
 | `drafts/t_seen_missing_info_rewrite.jsonl` | `d8ee12d696d73b899f30194fe244a424fe222f8f0b8cc6d38fc703a5f5744d39` |
 | `drafts/t_seen_multi_turn.jsonl` | `379c2b5f6a4c8771530d98423590a5375280ac684e7d289496dfec64111bb47b` |
@@ -102,4 +121,4 @@ Chưa phải bộ eval: cần một lượt gán nhãn rồi mới chia dev/test
 | `test/c.jsonl` | `82f99eb714d59864c789835aa046f6048d7d5cd603a1280be502d57670651be3` |
 | `test/t_rename_nonsense.jsonl` | `3dc7e341e92e55b26ee7648fb1781d5f4e66adc8f0573becc86b96e0881b0903` |
 | `test/t_seen.jsonl` | `60516ada5b16f65708083af416929dff29eedf680ae195a6e034bb66a0b9e820` |
-| `test/t_unseen.jsonl` | `a287897d9f5974aab48e695658d8f700436c764419304f934bbf8b45ea73717a` |
+| `test/t_unseen.jsonl` | `6e4823fe89181e1af0d05325bf4bca22f1605a701b6ed98c8ac3dfd6bd559630` |

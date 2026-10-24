@@ -6,9 +6,9 @@ import unittest
 import numpy as np
 
 from src.data.split import tool_text
-from src.eval.build_sets import (NO_FITTING_TOOL_REPLY, GrowingIndex, apply_rewrite, assemble_labelled, assemble_no_tool, call_item,
-                                 chat_item, clarify_draft, multi_turn_draft, near_seen_tools, pick, rename_item, rewrite_draft,
-                                 run)
+from src.eval.build_sets import (NO_FITTING_TOOL_REPLY, GrowingIndex, apply_rewrite, assemble_labelled, assemble_no_tool,
+                                 call_item, called_clusters, cap_clusters, chat_item, clarify_draft, multi_turn_draft,
+                                 near_seen_tools, pick, rename_item, rewrite_draft, run)
 from src.eval.scorers import score_clarify, score_tool_sample
 from src.tool_calls import format_tool_calls, format_tool_responses
 
@@ -308,6 +308,41 @@ class SamplingTests(unittest.TestCase):
         self.assertEqual(len(picked), 3)
         self.assertEqual(skipped["exact"], 1)
 
+    def test_cluster_cap_keeps_picked_items_that_fit_and_tops_up_the_rest(self):
+        math_tool, text_tool = tool("add", ("a",)), tool("reverse", ("s",))
+        cluster_of = {tool_text(math_tool): 29, tool_text(text_tool): 7}
+        words = ("alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet", "kilo")
+
+        def item(id_, word, called, split=None):
+            # Both tools are offered; only the called one sets the cluster.
+            entry = {"id": id_, "group": "single", "tools": [math_tool, text_tool],
+                     "turns": [{"role": "user", "content": f"{id_} {phrase(word)}"}],
+                     "expected_calls": [{"name": called["name"], "arguments": {"a": 1}}]}
+            return {**entry, "split": split} if split else entry
+
+        splits = {"test": [item(f"t{i}", words[i], math_tool, "test") for i in range(4)],
+                  "dev": [item("d0", words[4], math_tool, "dev"), item("d1", words[5], text_tool, "dev")]}
+        candidates = [item(f"m{i}", words[6 + i], math_tool) for i in range(2)]
+        candidates += [item(f"r{i}", words[8 + i], text_tool) for i in range(1)]
+        candidates.append({**item("dup", words[0], text_tool), "turns": splits["test"][0]["turns"]})
+        candidates.append(item("r1", words[9], text_tool))
+        index = GrowingIndex(num_perm=64, bands=16, ngram=3, threshold=0.7, seed=0)
+        for items in splits.values():
+            for entry in items:
+                index.add(entry["turns"][0]["content"])
+        capped, stats = cap_clusters(splits, candidates, {"test": 4, "dev": 2}, 0.5, index, rng=random.Random(0),
+                                     cluster_of=cluster_of)
+        self.assertEqual([entry["id"] for entry in capped["test"][:2]], ["t0", "t1"])
+        self.assertEqual([entry["id"] for entry in capped["dev"][:2]], ["d0", "d1"])
+        for split_name, limit in (("test", 2), ("dev", 1)):
+            clusters = Counter(cluster for entry in capped[split_name] for cluster in called_clusters(entry, cluster_of))
+            self.assertLessEqual(max(clusters.values()), limit)
+            self.assertTrue(all(entry["split"] == split_name for entry in capped[split_name]))
+        self.assertEqual(len(capped["test"]), 4)
+        self.assertEqual((stats["kept"], stats["added"], stats["dropped"]), (4, 2, Counter({29: 2})))
+        # "dup" fits the cap but repeats t0's prompt, so the top-up takes r0 and r1 whatever the order.
+        self.assertEqual(sorted(entry["id"] for entry in capped["test"][2:]), ["r0", "r1"])
+
 
 TOPIC = {"weather": 0, "stock": 1, "sports": 2}
 
@@ -375,6 +410,26 @@ class RunTests(unittest.TestCase):
         self.assertFalse(used & {item["meta"]["source_id"] for item in rewrites})
         ids = [item["meta"]["source_id"] for split in (test, dev) for name in ("t_seen", "t_unseen", "c") for item in split[name]]
         self.assertEqual(len(ids), len(set(ids)))
+
+    def test_cluster_cap_changes_only_the_unseen_call_groups(self):
+        lottery = tool("draw", ("game",), "sports lottery")
+        self.tools.append({"text": tool_text(lottery), "name": "draw", "unseen": True, "cluster": 4})
+        self.pools["unseen_eval"] += [call_example(f"l{i}", f"lottery {phrase(i)}", [{"name": "draw", "arguments": {"game": str(i)}}],
+                                                   [lottery], clusters=(4,)) for i in range(6)]
+        plain_run = run(self.pools, self.tools, self.config, embed=fake_embed)
+        self.config["eval_sets"]["unseen_cluster_cap"] = 0.67
+        capped = run(self.pools, self.tools, self.config, embed=fake_embed)
+        self.assertEqual(capped["drafts"], plain_run["drafts"])
+        for split_name, size in (("test", 3), ("dev", 1)):
+            for name in ("t_seen", "t_rename_nonsense", "c"):
+                self.assertEqual(capped["sets"][split_name][name], plain_run["sets"][split_name][name])
+            unseen = capped["sets"][split_name]["t_unseen"]
+            self.assertEqual(len(unseen), size)
+            per_cluster = Counter(item["meta"]["clusters"][0] for item in unseen)
+            self.assertLessEqual(max(per_cluster.values()), max(1, int(0.67 * size)))
+        self.assertEqual(capped["called_clusters"][("t_unseen", "single")], Counter({2: 2, 4: 2}))
+        self.assertEqual(capped["short"], plain_run["short"])
+        self.assertEqual(capped["stats"]["t_unseen"]["single"]["picked"], 4)
 
     def test_labelled_groups_are_checked_on_labels_not_on_the_draft_margin(self):
         cities = ["Hanoi", "Hue", "Da Nang", "Can Tho", "Vinh", "Sapa", "Dalat", "Quy Nhon", "Nha Trang", "Ha Long"]

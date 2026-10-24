@@ -6,7 +6,8 @@ and eval_sets/REPORT.md (tracked).
 
 Labelled here, from the data itself:
 - t_seen / t_unseen, groups single / select / parallel: the prompt is the user turn, the answer is the calls.
-  t_unseen drops every example offering a tool that sits close to a seen tool (PLAN 4.2 item 6).
+  t_unseen drops every example offering a tool that sits close to a seen tool (PLAN 4.2 item 6), and caps
+  the share of each called cluster per split (unseen_cluster_cap), topping up from the pool last.
 - t_rename_nonsense: t_seen with tool and parameter names replaced consistently (PLAN 4.4, second level).
 - c: held-out SmolTalk chat; the prompt is every turn before the last assistant reply.
 Drafted for a labelling pass, never scored as they are: Missing-info (missing_param candidates) and
@@ -278,6 +279,52 @@ def pick(candidates: list, n: int, index: GrowingIndex, *, rng, text=user_text) 
         index.add(prompt)
         picked.append(item)
     return picked, skipped
+
+
+def called_clusters(item: dict, cluster_of: dict) -> set:
+    """Clusters of the tools the answer calls: the domain a sample tests (offered distractors aside)."""
+    tools = {tool["name"]: tool for tool in item["tools"]}
+    return {cluster_of[tool_text(tools[call["name"]])] for call in item["expected_calls"]
+            if call["name"] in tools and tool_text(tools[call["name"]]) in cluster_of}
+
+
+def cap_clusters(splits: dict, candidates: list, sizes: dict, cap: float, index: GrowingIndex, *, rng,
+                 cluster_of: dict) -> tuple[dict, dict]:
+    """Per split, at most floor(cap x size) samples (at least 1) per called cluster. Picked items stay in order
+    while they fit; the rest is topped up from candidates in random order, skipping repeats like pick."""
+    order = list(candidates)
+    rng.shuffle(order)
+    taken = {item["id"] for items in splits.values() for item in items}
+    order = [item for item in order if item["id"] not in taken]
+    result, stats = {}, {"kept": 0, "dropped": Counter(), "added": 0, "skipped": Counter()}
+    for split_name, size in sizes.items():
+        limit, counts, kept = max(1, int(cap * size)), Counter(), []
+
+        def fits(item):
+            return all(counts[cluster] < limit for cluster in called_clusters(item, cluster_of))
+
+        for item in splits[split_name]:
+            if len(kept) < size and fits(item):
+                counts.update(called_clusters(item, cluster_of))
+                kept.append(item)
+            else:
+                stats["dropped"].update(called_clusters(item, cluster_of))
+        stats["kept"] += len(kept)
+        for item in order:
+            if len(kept) == size:
+                break
+            if not fits(item):
+                continue
+            verdict = index.match(user_text(item))
+            if verdict:
+                stats["skipped"][verdict] += 1
+                continue
+            index.add(user_text(item))
+            counts.update(called_clusters(item, cluster_of))
+            kept.append({**item, "split": split_name})
+            stats["added"] += 1
+        result[split_name] = kept
+    return result, stats
 
 
 def split_dev_test(items: list, n_test: int) -> dict:
@@ -614,6 +661,28 @@ def run(pools: dict, tools: list, config: dict, *, labels=None, embed=embed_text
             drafts[f"{set_name}_no_tool"], stats[set_name]["no_tool_drafts"] = no_tool_drafts(
                 set_name, offer, prompts, prompt_vectors, requests, catalog, settings, index, rng)
 
+    # T-unseen's pool is mostly one cluster of arithmetic; a cap per called cluster keeps the call groups from
+    # testing one domain. Drawn last, so the drafts and every other set stay unchanged.
+    cap = settings.get("unseen_cluster_cap")
+    cluster_of = {tool["text"]: tool["cluster"] for tool in tools}
+    if cap:
+        unseen_items = [with_id(example, item, "t_unseen") for example in kept_unseen
+                        if example["group"] in CALL_GROUPS for item in [call_item(example)] if item is not None]
+        capped = {}
+        for group in sorted(CALL_GROUPS):  # The order the groups were picked in.
+            picked = {split_name: [item for item in sets[split_name]["t_unseen"] if item["group"] == group]
+                      for split_name in SPLITS}
+            capped[group], cap_stats = cap_clusters(picked, [item for item in unseen_items if item["group"] == group],
+                                                    {"test": n_test, "dev": n_dev}, cap, index, rng=rng,
+                                                    cluster_of=cluster_of)
+            stat = stats["t_unseen"].setdefault(group, {"picked": 0, "wanted": n_test + n_dev, "skipped": {}})
+            stat["picked"] = sum(len(items) for items in capped[group].values())
+            stat["capped"] = cap_stats
+            stat["available_by_cluster"] = Counter(cluster for item in unseen_items if item["group"] == group
+                                                   for cluster in called_clusters(item, cluster_of))
+        for split_name in SPLITS:
+            sets[split_name]["t_unseen"] = [item for group in sorted(CALL_GROUPS) for item in capped[group][split_name]]
+
     labelled_stats = {}
     if labels:
         # A fresh index of the prompts the eval already holds: the drafting index also has every draft,
@@ -638,7 +707,12 @@ def run(pools: dict, tools: list, config: dict, *, labels=None, embed=embed_text
     called = Counter(call["name"] for item in sets["test"]["t_unseen"] for call in item["expected_calls"])
     clusters = Counter(cluster for split_name in SPLITS for item in sets[split_name]["t_unseen"]
                        for cluster in item["meta"]["clusters"])
+    called_by_group = {(set_name, group): Counter(cluster for split_name in SPLITS
+                                                  for item in sets[split_name][set_name] if item["group"] == group
+                                                  for cluster in called_clusters(item, cluster_of))
+                       for set_name in ("t_seen", "t_unseen") for group in CALL_GROUPS}
     return {"sets": sets, "drafts": drafts, "stats": stats, "available": available, "near": near,
+            "called_clusters": called_by_group, "cluster_cap": cap,
             "dropped_unseen": dropped, "undeclared": undeclared, "unseen_top_tools": called.most_common(15),
             "unseen_clusters": clusters, "n_test": n_test, "n_dev": n_dev, "labelled": labelled_stats,
             "short": short_groups(stats, labelled_stats, n_test + n_dev)}
@@ -687,6 +761,29 @@ def render_report(result: dict, config: dict, hashes: dict) -> str:
               + ", ".join(f"cụm {cluster}: {count}" for cluster, count in sorted(result["unseen_clusters"].items())) + ".",
               "", "Tool được gọi nhiều nhất trong T-unseen test: "
               + ", ".join(f"`{name}` ({count})" for name, count in result["unseen_top_tools"]) + "."]
+    if result.get("called_clusters"):
+        cap = result.get("cluster_cap")
+        lines += ["", "## Cụm của tool được gọi", "",
+                  (f"T-unseen đặt trần {cap:.0%} mẫu mỗi cụm cho từng nhóm, tính riêng test và dev: pool unseen phần lớn "
+                   "là một cụm tính toán (cụm 29). Mẫu đã chọn được giữ nếu còn trong trần, phần thiếu rút thêm từ pool "
+                   "sau mọi bước khác, nên nháp và các bộ khác không đổi. " if cap else "")
+                  + "Một mẫu tính cho mọi cụm của các tool nó gọi (tool nhiễu không tính); dev + test.", "",
+                  "| Bộ | Nhóm | Ba cụm nhiều nhất (số mẫu) | Cụm lớn nhất / số mẫu |", "|---|---|---|---|"]
+        for (set_name, group), counts in sorted(result["called_clusters"].items()):
+            total = sum(item["group"] == group for split_name in SPLITS for item in result["sets"][split_name][set_name])
+            top = ", ".join(f"cụm {cluster}: {count}" for cluster, count in counts.most_common(3))
+            share = counts.most_common(1)[0][1] / total if counts and total else 0
+            lines.append(f"| {set_name} | {group} | {top} | {share:.0%} |")
+        if cap:
+            lines += ["", "| Nhóm | Mẫu cũ giữ lại | Rút thêm | Có sẵn trong pool theo cụm (ba cụm lớn nhất) |",
+                      "|---|---|---|---|"]
+            for group in sorted(CALL_GROUPS):
+                stat = result["stats"]["t_unseen"][group]
+                capped = stat.get("capped", {})
+                pool = stat.get("available_by_cluster", Counter())
+                lines.append(f"| {group} | {capped.get('kept', '–')} | {capped.get('added', '–')} | "
+                             + ", ".join(f"cụm {cluster}: {count}" for cluster, count in pool.most_common(3))
+                             + f" (pool có {result['available']['t_unseen'].get(group, 0)} mẫu) |")
     undeclared = sum(result["undeclared"].values())
     lines += ["", "## T-rename mức tên vô nghĩa (PLAN 4.4)", "",
               "Tool đổi thành `fn_xxx`, tham số cấp ngoài cùng thành `p1, p2…` theo thứ tự trong schema; description "
