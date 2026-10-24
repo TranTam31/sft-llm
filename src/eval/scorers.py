@@ -8,7 +8,9 @@ An output is read two ways:
   Reported as strict_format.
 
 clarify_correct and grounded_correct are rules only: no judge is re-run per checkpoint
-(PLAN 3.3), so the labels carry synonyms and required values strict enough for rules.
+(PLAN 3.3), so the labels carry synonyms and required values strict enough for rules. Both also
+require a generated output to end with <|im_end|>: one that never ends is not a turn, and its tail
+is often an invented user turn whose text would otherwise earn credit (seen on base, E0 2026-10-24).
 """
 
 from collections import Counter
@@ -168,15 +170,20 @@ def _words(text):
     return re.findall(r"[a-z0-9]+", text.lower())
 
 
-def score_clarify(output: str, *, missing_param: str, synonyms=()) -> dict:
-    """Missing-info rule layer: no call, asks a question, names the missing argument."""
+def _ended(stop_reason):
+    """stop_reason as classified in src.playground; None marks a hand-written reference answer."""
+    return stop_reason is None or stop_reason == "im_end"
+
+
+def score_clarify(output: str, *, missing_param: str, synonyms=(), stop_reason: str | None = None) -> dict:
+    """Missing-info rule layer: ends with <|im_end|>, no call, asks a question, names the missing argument."""
     called = extract_tool_calls(output).has_marker
     words = " ".join(_words(_strip_stop(output)))
     names = [missing_param, *synonyms]
     mentions = any(re.search(rf"\b{' '.join(_words(name))}\b", words) for name in names if _words(name))
     asks = "?" in output
     return {"called": called, "asks": asks, "mentions_param": mentions,
-            "clarify_correct": not called and asks and mentions}
+            "clarify_correct": _ended(stop_reason) and not called and asks and mentions}
 
 
 # A number keeps its sign and decimals ("-31" is not "31", "31.5" is not "31"); a hyphen inside a
@@ -231,8 +238,8 @@ def _mentions(tokens, clauses, value):
     return found
 
 
-def score_grounded(output: str, *, required: list, forbidden: list) -> dict:
-    """Multi-turn rule layer: every required value stated, no forbidden value stated.
+def score_grounded(output: str, *, required: list, forbidden: list, stop_reason: str | None = None) -> dict:
+    """Multi-turn rule layer: ends with <|im_end|>, every required value stated, no forbidden value stated.
 
     A value preceded in its clause by a negation ("not 31", "isn't available", "couldn't find Hotel A")
     is denied, not stated; "It is 31, not 30" still states 31. Negation after the value ("31 is wrong")
@@ -245,7 +252,8 @@ def score_grounded(output: str, *, required: list, forbidden: list) -> dict:
     required_all = all(mentions[str(value)] == "stated" for value in required)
     forbidden_none = not any(mentions[str(value)] == "stated" for value in forbidden)
     return {"called": called, "required_all": required_all, "forbidden_none": forbidden_none,
-            "negated_required": negated, "grounded_rule": not called and required_all and forbidden_none}
+            "negated_required": negated,
+            "grounded_rule": _ended(stop_reason) and not called and required_all and forbidden_none}
 
 
 NO_FITTING_TOOL = re.compile("|".join([

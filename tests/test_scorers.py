@@ -158,7 +158,23 @@ class ClarifyTests(unittest.TestCase):
                 self.assertFalse(score_clarify(output, missing_param="city")["clarify_correct"])
 
 
+    def test_an_output_that_does_not_end_with_im_end_scores_wrong(self):
+        for stop in ("max_new_tokens", "endoftext"):
+            with self.subTest(stop=stop):
+                result = score_clarify("Which city? tolist user Which city?", missing_param="city", stop_reason=stop)
+                self.assertTrue(result["asks"] and result["mentions_param"])
+                self.assertFalse(result["clarify_correct"])
+        self.assertTrue(score_clarify("Which city?<|im_end|>", missing_param="city", stop_reason="im_end")["clarify_correct"])
+
+
 class GroundedTests(unittest.TestCase):
+    def test_an_output_that_does_not_end_with_im_end_scores_wrong(self):
+        result = score_grounded("It is 31 C.", required=["31"], forbidden=[], stop_reason="max_new_tokens")
+        self.assertTrue(result["required_all"])
+        self.assertFalse(result["grounded_rule"])
+        self.assertTrue(score_grounded("It is 31 C.<|im_end|>", required=["31"], forbidden=[],
+                                       stop_reason="im_end")["grounded_rule"])
+
     def test_required_values_present_and_forbidden_absent(self):
         ok = score_grounded("It is sunny and 31 C in Hanoi.", required=["31", "sunny"], forbidden=["rain"])
         self.assertTrue(ok["grounded_rule"])
