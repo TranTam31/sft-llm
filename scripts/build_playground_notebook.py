@@ -396,7 +396,33 @@ T-seen, T-unseen (bỏ mẫu có tool sát tool seen), T-rename mức tên vô n
     write_notebook("02_data.ipynb", cells, digest)
 
 
+EVAL_PINS = [("lm_eval", "0.4.13")]
+
+
+def build_eval():
+    encoded, digest = source_bundle()
+    cells = [
+        cell("markdown", """# Phase 1 — Benchmark chung
+ARC-Easy và HellaSwag qua `lm-evaluation-harness` (PLAN 3.3): 500 câu đầu mỗi bộ, 0-shot, chấm theo log-likelihood. Không cần token HF. GPU nhanh hơn; trên CPU đặt `DEVICE = "cpu"`.
+"""),
+        cell("markdown", "## 1. Cài thư viện"),
+        cell("code", install_code(INFERENCE_PINS + [("datasets", "5.1.0")] + EVAL_PINS)),
+        cell("markdown", "## 2. Nạp mã nguồn của dự án"),
+        cell("code", bundle_code(encoded, digest)),
+        cell("markdown", "## 3. Kiểm tra mã"),
+        cell("code", TESTS_CODE),
+        cell("markdown", "## 4. Chạy ARC-Easy và HellaSwag\n`MODEL` là khóa trong `configs/models.yaml` hoặc id trên Hub. Kết quả ghi vào `results/benchmarks/`."),
+        cell("code", '''import torch
+MODEL = "chat_reference"
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+!python -m src.eval.benchmarks --model {MODEL} --device {DEVICE} --batch-size 16
+'''),
+    ]
+    write_notebook("03_eval.ipynb", cells, digest)
+
+
 if __name__ == "__main__":
     build()
     build_train_smoke()
     build_data()
+    build_eval()
