@@ -5,7 +5,7 @@ from src.data.split import tool_text
 from src.data.train_sets import asks_for_missing, run, spread, targets
 from src.eval.build_sets import NO_FITTING_TOOL_REPLY
 from src.tool_calls import format_tool_calls, format_tool_responses
-from tests.test_eval_build_sets import call_example, fake_embed, phrase, tool
+from test_eval_build_sets import call_example, fake_embed, phrase, tool  # tests/ is on sys.path under discover
 
 
 WEATHER = tool("get_weather", ("city", "unit"), "weather")
