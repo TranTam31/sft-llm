@@ -344,8 +344,9 @@ Hai tập dữ liệu train được **cố định một lần** và dùng chun
 
 - **D_chat**: N_chat mẫu chat.
 - **D_tool**: N_tool mẫu tool, gồm khoảng 20% No-tool, kèm Multi-turn và Missing-info.
+  - *Missing-info kiểu xLAM trong train (2026-10-26):* ở pilot, model hỏi lại được ở 9/30 mẫu Glaive nhưng 0/36 mẫu xLAM viết lại, vì train chỉ có Missing-info từ Glaive. Phần Glaive còn thiếu (306/1000) nay được lấp bằng câu hỏi xLAM viết lại cho thiếu một tham số bắt buộc, dựng như bộ eval (từ pool train, không trùng prompt eval), thay vì chuyển sang nhóm gọi tool. Chi tiết và hash ở `data/TRAIN.md`.
 
-Số lượng cụ thể sẽ chốt sau pilot, dự kiến N_chat ≈ N_tool ≈ 10k. Mọi run đều có **mỗi mẫu được học đúng 2 epoch**.
+Số lượng chốt sau pilot (2026-10-26): N_chat = N_tool = 10k. Mọi run đều có **mỗi mẫu được học đúng 2 epoch**.
 
 | ID | Khởi đầu từ | Dữ liệu (thứ tự) | Optimizer / scheduler |
 |---|---|---|---|
@@ -418,8 +419,8 @@ Mục đích: kiểm tra hạ tầng và kiểm tra **scorer chấm đúng**, **
   - **Không đạt (a):** trước hết tìm lỗi hạ tầng (mask, template, cấu hình dừng, parser). Chỉ khi hạ tầng đã đúng mà vẫn không đạt thì đổi model.
   - **Phương án dự phòng:** (1) SmolLM2-1.7B base với LoRA: giữ nguyên tokenizer, ChatML và pipeline; full fine-tune 1.7B không vừa T4 (trọng số + Adam ≈ 27 GB) nên RQ6 cần GPU lớn hơn hoặc bị thu hẹp. (2) Một base model khác cỡ ~0.5B: phải kiểm tra lại tokenizer, token dừng và chạy lại các kiểm tra Phase 0.
   - Đổi model thì chạy lại E0 và pilot trên model mới, ghi quyết định và lý do vào `EXPERIMENTS.md` trước khi khóa giao thức.
-- [ ] Chốt N_chat, N_tool, lr, lịch checkpoint, các ngưỡng ở mục 3.5
-- [ ] **Khóa giao thức:** ghi toàn bộ quyết định vào `EXPERIMENTS.md` kèm ngày và commit hash. Chỉ từ thời điểm này mới được chạy test.
+- [x] Chốt N_chat, N_tool, lr, lịch checkpoint, các ngưỡng ở mục 3.5 (2026-10-26: 10k/10k, lr 5e-5, nhân đôi từ 25k token, θ như 3.5)
+- [x] **Khóa giao thức** (2026-10-26, EXPERIMENTS.md "Khóa giao thức"): ghi toàn bộ quyết định vào `EXPERIMENTS.md` kèm ngày và commit hash. Chỉ từ thời điểm này mới được chạy test.
 
 ### Giai đoạn 3 — Thí nghiệm chính (E0 test, E1 → E3)
 - [ ] Eval E0 trên test

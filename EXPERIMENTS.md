@@ -308,3 +308,69 @@ Metric dev đi cùng chiều, nhất là `clarify_correct` (0 → 0.12 → 0.39 
 - Eval dev (6 snapshot) cộng perplexity mất khoảng 37 phút.
 - GPU đỉnh 11.07 GiB.
 - Ước lượng cho run chính 20k mẫu × 2 epoch = 40k mẫu: train thuần khoảng 3 giờ, chưa tính snapshot và eval.
+
+## 2026-10-26 — Dữ liệu: thêm Missing-info kiểu xLAM vào D_tool
+
+**Loại hoạt động:** sửa dữ liệu train sau pilot, trước khi khóa giao thức (PLAN §5.1). Không đụng bộ eval.
+
+**Lý do:** ở pilot, `clarify_correct` trên mẫu xLAM viết lại là 0/36, trên mẫu Glaive là 9/30. Train chỉ có Missing-info từ Glaive (694 câu mở đầu khác nhau), phần thiếu 306 mẫu đã bị chuyển sang nhóm gọi tool.
+
+**Cách làm:** `src/data/train_sets.py`, config `train_sets.missing_info_rewrite`.
+- 429 nháp từ câu hỏi xLAM single/select chưa dùng trong tập train.
+- 4 subagent gán nhãn: câu hỏi viết lại, `missing_param`, từ đồng nghĩa, câu hỏi lại. Kết quả: 359 đạt, 70 bị loại. Lý do loại chủ yếu là tham số có giá trị mặc định ghi trong mô tả, giá trị phân trang hoặc chung chung, hoặc giá trị suy ra được từ phần còn lại.
+- Mọi nhãn qua `apply_rewrite`, câu hỏi lại phải đạt `score_clarify`. 31 câu viết lại bị bỏ vì trùng prompt khác, lấy 306.
+- Tự đọc rà 14 mẫu ngẫu nhiên: câu viết lại tự nhiên, câu hỏi lại hỏi đúng tham số thiếu. Có 352/359 câu hỏi lại khác nhau; khoảng 20% mở bằng "Sure. What is…".
+- Nhãn ở `data/train/labels/missing_info_rewrite.jsonl` (git-ignore, có trên dataset Hub).
+
+**Kết quả:**
+- D_tool `70de4fa2…` (trước là `5467d878…`), có 1000 mẫu Missing-info: 694 Glaive và 306 xLAM viết lại.
+- Bớt đúng 306 mẫu gọi tool (105 single, 104 select, 97 parallel); 9694 mẫu còn lại giữ nguyên từng byte.
+- D_chat và nháp No-tool giữ nguyên hash.
+- Token assistant của D_tool: 0.960 triệu (trước là 0.976 triệu).
+- Đã đẩy lên dataset Hub `trantam31/sft-capability-data`.
+
+**Ảnh hưởng tới pilot:** pilot E2 và sweep lr chạy trên D_tool cũ. Chênh lệch chỉ ở 306/10000 mẫu, nên lr đã chọn vẫn dùng được. Kết quả Missing-info của pilot không còn đại diện cho dữ liệu mới.
+
+## 2026-10-26 — Khóa giao thức (PLAN §6, cuối Giai đoạn 2)
+
+Từ mốc này mới được chạy test. Mọi thay đổi sau đây về dữ liệu, metric, ngưỡng hay siêu tham số phải ghi thành một mục mới, kèm lý do, và không được sửa ngược phần dưới.
+
+**Mã và dữ liệu**
+- Code: commit `6c919c8`, source bundle `b6232a2e…` (`scripts/build_playground_notebook.py`).
+- Model: `HuggingFaceTB/SmolLM2-360M` @ `f8027fd0…` (`configs/models.yaml`). Giữ 360M theo tiêu chí đi/dừng.
+- Train: D_chat `58674077…` (10 000 mẫu), D_tool `70de4fa2…` (10 000 mẫu, gồm 1000 Missing-info: 694 Glaive và 306 xLAM viết lại). Xem `data/TRAIN.md` và dataset Hub `trantam31/sft-capability-data`.
+- Eval: dev/test đóng băng theo `eval_sets/MANIFEST.md` (`7aeaeb97…`, 11 file khớp); P `eval_sets/p.jsonl` (`54db40ea…`).
+
+**Run (PLAN §5.1)**
+- Mỗi mẫu được học đúng 2 epoch. Tổng khoảng 6.53 triệu token assistant mỗi run.
+- E1 (Seq): D_chat × 2 epoch rồi D_tool × 2 epoch, một lịch lr toàn cục, optimizer liên tục. Seed 0, 1, 2.
+- E2 (Mix): D_chat ∪ D_tool trộn ngẫu nhiên. Seed 0, 1, 2.
+- E3 (LoRA, như E2): r = 64 với seed 0, 1, 2; r = 8 với seed 0. lr 2e-4, alpha = 2r, dropout 0.05, gắn vào q/k/v/o/gate/up/down của cả 32 layer, không gắn embedding (PLAN §5.2). lr của LoRA không qua sweep.
+- Tổng 10 run.
+- Giả thuyết của mỗi run phải ghi vào EXPERIMENTS.md trước khi chạy run đó.
+
+**Siêu tham số full fine-tune** (`configs/train_base.yaml`): lr 5e-5 (chọn theo tiêu chí ghi trước khi sweep, xem mục "sweep lr"), cosine, warmup 3% toàn run, batch hiệu dụng 32 (8 × 4), seq len 1024, fp16 AMP, gradient checkpointing, grad clip 1.0, weight decay 0.
+
+**Checkpoint (PLAN §3.7):** snapshot fp32 ở step đầu tiên mà token assistant cộng dồn chạm 25k, 50k, 100k… (nhân 2), cộng step cuối, khoảng 10 snapshot mỗi run. Trục x là `assistant_tokens_seen`.
+
+**Eval (PLAN §3.3, §3.6)**
+- Chấm test ở mọi snapshot.
+- Greedy; `max_new_tokens` = 256, riêng bộ C là 512. Cấu hình dừng theo PLAN §2.4.
+- Scorer ở commit trên: luật so số bỏ số 0 thừa ở phần thập phân; phủ định trong 3 từ trước giá trị; `clarify_correct` và `grounded_correct` yêu cầu dừng bằng `<|im_end|>`.
+- Base được chấm zero-shot và few-shot; 360M-Instruct chấm bằng template riêng của nó.
+- G: perplexity wikitext-2, KL tới base, ARC-Easy/HellaSwag ở các mốc chính. BFCL ở các mốc chính.
+
+**Thống kê và ngưỡng (PLAN §3.5):** metric kỹ năng và θ giữ nguyên (θ = 0.5, riêng `decision_bacc` là 0.75; bộ θ kiểm độ nhạy như PLAN).
+- t_reach: đạt θ và giữ ở 2 checkpoint kế tiếp.
+- t_improve: hiệu số so với base zero-shot ≥ 0.2, cận dưới CI > 0, giữ ở 2 checkpoint kế tiếp.
+- CI: bootstrap 95%, 2000 lần, theo cặp và theo cụm (`src/eval/stats.py`; cụm theo cùng lượt user đầu hoặc cùng tool quyết định đáp án).
+- Biến thiên do seed báo riêng: độ lệch chuẩn giữa 3 seed.
+
+**Ngân sách:** ước khoảng 6 giờ GPU T4 mỗi run full fine-tune (train khoảng 3.5 giờ, chấm test khoảng 2.5 giờ), tổng khoảng 55–60 giờ. Mỗi lần có hạn mức Colab miễn phí chỉ được khoảng 3 giờ GPU, nên một run phải chạy qua nhiều lần, nối lại bằng resume từ Hub (đã kiểm ở quy mô thật).
+
+**Hạn chế đã biết lúc khóa (không sửa trước khi chạy):**
+- `grounded_correct` chỉ kiểm giá trị có xuất hiện, không kiểm vai trò của giá trị. Trong 10 mẫu luật chấm đúng ở pilot, chấm tay thấy 1 mẫu sai.
+- Không mẫu Multi-turn nào có nhãn giá trị cấm.
+- Việc sinh `<tool_call>` trong bộ C chưa có metric. Nếu cần thì thêm sau bằng cách chấm lại `outputs.jsonl`; đó là phân tích phụ, không đổi metric chính.
+- Missing-info của train có 31% kiểu xLAM, của eval khoảng 55%.
+- T-unseen dễ hơn T-seen (ít tham số tùy chọn hơn). Kết luận RQ3 cần bản so khớp theo độ khó (PLAN §4.2 ý 5).
