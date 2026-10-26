@@ -122,6 +122,27 @@ class ScoreTests(unittest.TestCase):
         self.assertEqual([(i["set"], i["n"]) for i in limit_per_set(items, 2)], [("a", 0), ("a", 1), ("b", 0), ("b", 1)])
 
 
+class TokenLimitTests(unittest.TestCase):
+    def test_chat_set_gets_the_longer_limit_and_order_is_kept(self):
+        from unittest import mock
+
+        from src.eval import run_eval
+
+        items = [item("single"), {**item("chat"), "id": "c:1", "set": "c"}, {**item("no_tool"), "id": "x:2"}]
+        calls = []
+
+        def fake_generate(model, tokenizer, prompts, *, batch_size, max_new_tokens):
+            calls.append((len(prompts), max_new_tokens))
+            return [{"completion": f"{max_new_tokens}<|im_end|>", "generated_tokens": 1, "stop_reason": "im_end"}
+                    for _ in prompts]
+
+        with mock.patch.object(run_eval, "generate", fake_generate):
+            records, summary = run_eval.run(None, None, items, template="project", few_shot=False, batch_size=4)
+        self.assertEqual(sorted(calls), [(1, 512), (2, 256)])
+        self.assertEqual([r["completion"] for r in records], ["256<|im_end|>", "512<|im_end|>", "256<|im_end|>"])
+        self.assertEqual(summary["max_new_tokens"], {"t_seen": 256, "c": 512})
+
+
 @unittest.skipUnless(HAS_RUNTIME, "Install the model runtime or run these checks in Colab.")
 class GenerateTests(unittest.TestCase):
     def test_batched_generation_keeps_order_and_cuts_at_the_stop(self):

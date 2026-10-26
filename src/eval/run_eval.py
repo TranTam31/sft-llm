@@ -26,6 +26,8 @@ ROOT = Path("eval_sets")
 SETS = ("t_seen", "t_unseen", "t_rename_nonsense", "t_rename_synonym", "c")
 TOOL_GROUPS = ("single", "select", "parallel", "no_tool")
 MAX_NEW_TOKENS = 256
+# PLAN 3.6 (2026-10-26): about 1 in 5 C references runs past 256 tokens, which capped C's stop_rate near 0.8.
+MAX_NEW_TOKENS_BY_SET = {"c": 512}
 
 # PLAN 3.6: three fixed examples for base few-shot, with tools that appear in no eval set (checked in tests).
 # One call, one direct answer despite offered tools, one clarifying question.
@@ -203,15 +205,28 @@ def load_model(model_id: str, revision: str | None, device: str):
     return model.eval(), tokenizer
 
 
+def token_limit(item: dict) -> int:
+    return MAX_NEW_TOKENS_BY_SET.get(item["set"], MAX_NEW_TOKENS)
+
+
 def run(model, tokenizer, items: list[dict], *, template: str, few_shot: bool, batch_size: int) -> tuple[list, dict]:
+    """Generates each token limit's items in their own batches, so the longer limit of C does not slow the rest."""
     prompts = [render(item, template=template, few_shot=few_shot, tokenizer=tokenizer) for item in items]
     started = perf_counter()
-    outputs = generate(model, tokenizer, prompts, batch_size=batch_size)
+    outputs = [None] * len(items)
+    for limit in sorted({token_limit(item) for item in items}):
+        indices = [index for index, item in enumerate(items) if token_limit(item) == limit]
+        for index, output in zip(indices, generate(model, tokenizer, [prompts[i] for i in indices],
+                                                   batch_size=batch_size, max_new_tokens=limit)):
+            outputs[index] = output
     seconds = perf_counter() - started
     records = [{"id": item["id"], "set": item["set"], "group": item["group"], **output,
                 "scores": score(item, output["completion"], output["stop_reason"])}
                for item, output in zip(items, outputs)]
-    return records, {"generation_seconds": seconds, "n_prompts": len(items)}
+    return records, {"generation_seconds": seconds, "n_prompts": len(items),
+                     "max_new_tokens": {**{name: MAX_NEW_TOKENS for name in dict.fromkeys(i["set"] for i in items)},
+                                        **{name: limit for name, limit in MAX_NEW_TOKENS_BY_SET.items()
+                                           if any(i["set"] == name for i in items)}}}
 
 
 def rescore(folder: Path, root: Path = ROOT) -> dict:
