@@ -1,0 +1,5 @@
+# PLAN 5.2 lr sweep on dev: the E2 10% pilot (configs/e2_pilot.yaml, lr 2e-5) with only the learning rate changed.
+base: configs/e2_pilot.yaml
+run_name: e2_pilot_lr1e-5
+learning_rate: 1.0e-5
+output_dir: results/runs/e2_pilot_lr1e-5
