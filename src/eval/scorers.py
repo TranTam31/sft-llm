@@ -199,6 +199,12 @@ def _normalize(text):
     return " ".join(VALUE_TOKEN.findall(_drop_thousands(text)))
 
 
+def _value_tokens(text):
+    """VALUE_TOKEN tokens with trailing decimal zeros dropped, so "$57.50" states 57.5 and "230.00" states 230."""
+    return [token.rstrip("0").rstrip(".") if "." in token and token[-1].isdigit() else token
+            for token in VALUE_TOKEN.findall(text)]
+
+
 # Clause ends: sentence marks, and . , : unless a digit follows ("31.5", "14:05" stay whole).
 CLAUSE_END = re.compile(r"[!?;\n]|[.,:](?!\d)")
 NEGATION = {"not", "no", "never", "cannot", "nor", "neither", "unable"}
@@ -210,7 +216,7 @@ NEGATION_WINDOW = 3
 def _clause_tokens(text):
     """(token, clause index) for every value token; a value may span clauses ("Chicago, IL")."""
     return [(token, index) for index, clause in enumerate(CLAUSE_END.split(_drop_thousands(text)))
-            for token in VALUE_TOKEN.findall(clause)]
+            for token in _value_tokens(clause)]
 
 
 def _negates(tokens, position):
@@ -224,7 +230,7 @@ def _negates(tokens, position):
 def _mentions(tokens, clauses, value):
     """'stated' when some occurrence is not denied by a negation just before it in the same clause,
     'negated' when every occurrence is, None when the value is absent."""
-    target = VALUE_TOKEN.findall(_drop_thousands(str(value)))
+    target = _value_tokens(_drop_thousands(str(value)))
     if not target:
         return None
     found = None

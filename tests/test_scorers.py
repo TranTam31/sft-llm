@@ -196,6 +196,13 @@ class GroundedTests(unittest.TestCase):
         self.assertFalse(score_grounded("It is -31 C today.", required=["31"], forbidden=[])["required_all"])
         self.assertTrue(score_grounded("It is -31 C today.", required=["-31"], forbidden=[])["required_all"])
         self.assertFalse(score_grounded("It is 31.5 C.", required=["31"], forbidden=[])["required_all"])
+        self.assertFalse(score_grounded("It is 31.05 C.", required=["31"], forbidden=[])["required_all"])
+
+    def test_trailing_decimal_zeros_do_not_change_a_number(self):
+        output = "The total is $230.00 and each person pays $57.50."
+        self.assertTrue(score_grounded(output, required=[230, 57.5], forbidden=[])["required_all"])
+        self.assertTrue(score_grounded("Each pays $57.5.", required=["57.50"], forbidden=[])["required_all"])
+        self.assertFalse(score_grounded("It is 2300 now.", required=[230], forbidden=[])["required_all"])
         self.assertTrue(score_grounded("Born 1990-05-15, total $1,000.", required=["05", "1000"],
                                        forbidden=[])["required_all"])
 
