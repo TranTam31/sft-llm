@@ -247,3 +247,64 @@ Rút ngẫu nhiên, seed 0, phân tầng theo nhóm: Missing-info 12, Multi-turn
 - Không mẫu Multi-turn nào có nhãn `forbidden`, nên luật giá trị cấm chỉ được kiểm bằng unit test, chưa chạy trên nhãn thật.
 - Ở 122/266 mẫu Missing-info, mọi tham số khác của tool đều trùng từ đồng nghĩa, nên lỗi "hỏi sai tham số" phải dùng một tham số giả.
 - Bộ này chỉ kiểm lỗi đã biết. Lỗi về vai trò của giá trị ("giá sau giảm là $30", khi $30 là số tiền được giảm) không bị bắt; xem mục chấm tay.
+
+### Chạy lại bộ C với 512 token (2026-10-26)
+
+**Cách chạy:** notebook `06_pilot_lr` (Colab T4), mục 11: `run_eval --sets c` cho E0, `run_checkpoints --sets c` cho 6 snapshot pilot. Chỉ C được sinh lại; các bộ khác giữ output cũ và được chấm lại theo luật hiện tại. Mọi metric ngoài C trùng bản ở máy. Kết quả nằm ở `results/{e0,e2_pilot}/` trên Hub `trantam31/smollm2-360m-e2-pilot`.
+
+**`stop_rate` C, 256 → 512 token** (`truncated_rate` trong ngoặc):
+
+| Model | 256 | 512 |
+|---|---|---|
+| base zero-shot / few-shot | 0.00 (0.96) | 0.00 (0.96) |
+| 360M-Instruct | 0.82 (0.18) | 0.96 (0.04) |
+| pilot step 19 | 0.24 (0.76) | 0.26 (0.74) |
+| pilot step 37 | 0.76 (0.24) | 0.80 (0.20) |
+| pilot step 76 | 0.76 (0.24) | 0.92 (0.08) |
+| pilot step 125 | 0.72 (0.28) | 0.82 (0.18) |
+
+- 360M-Instruct gần như hết bị cắt, nên trần ở 256 đúng là do cấu hình.
+- Pilot ở step 125 vẫn bị cắt 18% mẫu C. Phần này phần lớn là lặp vòng (xem mục chấm tay), tức lỗi dừng thật của model.
+
+## 2026-10-26 — Pilot: sweep lr, kiểm resume, thời gian train
+
+**Loại hoạt động:** pilot (PLAN §5.2, §6 Giai đoạn 2), chỉ dùng dev. Tiêu chí chọn lr được ghi vào PLAN §5.2 trước khi chạy.
+
+**Thiết lập:** như pilot E2 10% (`configs/e2_pilot.yaml`), chỉ đổi lr: `configs/e2_pilot_lr1e-5.yaml`, `configs/e2_pilot_lr5e-5.yaml`. Notebook `06_pilot_lr`, Colab T4, bundle `fd73d015…`. Repo run: `trantam31/smollm2-360m-e2-pilot-lr1e-5`, `…-lr5e-5`. Bộ C đã dùng 512 token cho cả ba lr, vì pilot 2e-5 đã được chạy lại phần C.
+
+**Kết quả ở step 125** (metric dev là điểm ước lượng, mỗi ô T-seen / T-unseen):
+
+| lr | val loss chat | val loss tool seen | val loss tool unseen | perplexity | KL tới base | `call_exact` | `decision_bacc` | `clarify_correct` | `grounded_correct` | `stop_rate` C |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1e-5 | 1.054 | 0.337 | 0.318 | 13.13 | 0.007 | 0.40 / 0.55 | 0.77 / 0.83 | 0.00 / 0.00 | 0.82 / 0.82 | 0.80 |
+| 2e-5 | 1.023 | 0.304 | 0.286 | 13.19 | 0.011 | 0.46 / 0.61 | 0.82 / 0.86 | 0.12 / 0.15 | 0.88 / 0.91 | 0.82 |
+| 5e-5 | 1.005 | 0.274 | 0.258 | 13.41 | 0.026 | 0.55 / 0.71 | 0.88 / 0.88 | 0.39 / 0.27 | 0.94 / 1.00 | 0.88 |
+| 1e-4 | 1.017 | 0.268 | 0.254 | **13.93** | 0.058 | 0.58 / 0.73 | 0.89 / 0.92 | 0.39 / 0.30 | 0.91 / 1.00 | 0.88 |
+
+Base: perplexity 13.01, nên ràng buộc là ≤ 13.66.
+
+**Chọn theo tiêu chí đã ghi trước: lr 5e-5.** Lưới được mở rộng thêm 1e-4 sau khi thấy 5e-5 nằm ở mép (PLAN §5.2). Run 1e-4 chạy trên notebook `06_pilot_lr`, bundle `f876fa0c…`, repo `trantam31/smollm2-360m-e2-pilot-lr1e-4`.
+- 1e-4 bị loại: perplexity 13.93 vượt ràng buộc 13.66. Dù không bị loại thì nó cũng chỉ hơn 5e-5 0.006 val loss tool seen, dưới ngưỡng hòa 0.01, nên vẫn chọn lr nhỏ hơn.
+- val loss tool seen thấp nhất, hơn 2e-5 0.030 (> 0.01);
+- perplexity 13.41 ≤ 13.66;
+- val loss chat 1.005, thấp hơn của 2e-5.
+
+Metric dev đi cùng chiều, nhất là `clarify_correct` (0 → 0.12 → 0.39 trên T-seen), nhưng không dùng để chọn.
+
+**Lưu ý:**
+- Điểm tối ưu nay đã nằm trong lưới: từ 5e-5 lên 1e-4, val loss tool gần như đứng yên (0.274 → 0.268), trong khi độ lệch khỏi base tăng mạnh (KL 0.026 → 0.058, perplexity 13.41 → 13.93). Metric dev của 1e-4 ngang 5e-5, trong khoảng nhiễu của 33 mẫu mỗi nhóm.
+- Perplexity và KL cũng tăng theo lr (KL 0.007 → 0.026). Run chính dài gấp khoảng 10 lần pilot, nên phải theo dõi phần quên.
+- Chưa sửa `configs/train_base.yaml`: chờ chốt cùng lúc khóa giao thức.
+
+**Kiểm resume ở quy mô thật (PLAN 5.3):** run lr 5e-5 dừng ở step 50 (`--stop-after 50`), rồi chạy tiếp từ `last-checkpoint/` trên Hub (`--resume hub`).
+- Thứ tự mẫu trùng pilot.
+- Số token assistant cộng dồn chạy tiếp đúng, kết thúc ở 671 816, bằng pilot.
+- Loss liền mạch qua chỗ nối: 0.818 ở step 50, 0.826 ở step 55.
+- 6 snapshot đủ, chấm bình thường.
+
+**Thời gian và tài nguyên (T4):**
+- Train thuần (`step_seconds`, chỉ tính bên trong các step): lr 1e-5 mất 1076 giây; lr 5e-5 mất 420 + 664 = 1084 giây; lr 1e-4 mất 1068 giây. Cùng là 125 step × 32 = 4000 mẫu, tức khoảng 270 giây cho 1000 mẫu.
+- Snapshot fp32, val loss và đẩy Hub tốn thêm khoảng 870 giây mỗi run.
+- Eval dev (6 snapshot) cộng perplexity mất khoảng 37 phút.
+- GPU đỉnh 11.07 GiB.
+- Ước lượng cho run chính 20k mẫu × 2 epoch = 40k mẫu: train thuần khoảng 3 giờ, chưa tính snapshot và eval.

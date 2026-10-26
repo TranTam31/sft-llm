@@ -371,6 +371,9 @@ Số lượng cụ thể sẽ chốt sau pilot, dự kiến N_chat ≈ N_tool �
 - **Full fine-tune:** lr 2e-5, cosine, warmup 3%, seq len 1024, effective batch 32, fp16 AMP, gradient checkpointing, grad clip 1.0.
 - **LoRA:** lr 2e-4, alpha = 2r, dropout 0.05. Gắn vào **`q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj`** của cả 32 layer. **Không** gắn vào embedding / `lm_head` (hai ma trận này là một vì tied), và cũng không train chúng (không dùng `modules_to_save`). Đây là điểm khác cố ý so với full fine-tune, nơi embedding có thay đổi. Phải nhắc tới điều này khi so sánh embedding drift.
 - Chọn lr bằng một sweep nhỏ **trên dev** (ví dụ {1e-5, 2e-5, 5e-5} cho full fine-tune), sau đó cố định cho mọi run.
+  - *Cách chọn (ghi trước khi chạy, 2026-10-26):* sweep {1e-5, 2e-5, 5e-5} trên thiết lập pilot E2 10% (`configs/e2_pilot*.yaml`; 2e-5 chính là pilot). Ở step cuối, chọn lr có val loss tool seen thấp nhất, kèm hai ràng buộc: perplexity wikitext-2 ≤ 1.05 × base, và val loss chat không cao hơn mức của lr 2e-5 quá 0.02. Hai lr có val loss tool chênh dưới 0.01 thì chọn lr nhỏ hơn. Metric dev (`call_exact`, `decision_bacc`, `clarify_correct`) chỉ dùng để mô tả, không dùng để chọn, vì 33 mẫu mỗi nhóm thì CI quá rộng.
+  - Hạn chế: run chính dài gấp khoảng 10 lần pilot, nên lr tốt nhất ở pilot có thể không tốt nhất ở run chính.
+  - *Mở rộng lưới (2026-10-26, sau khi thấy kết quả ba mức đầu):* 5e-5 thắng nhưng nằm ở mép trên, val loss còn giảm đều theo lr, nên chạy thêm 1e-4 (`configs/e2_pilot_lr1e-4.yaml`) để kẹp điểm tối ưu. Tiêu chí chọn giữ nguyên, áp dụng cho cả bốn mức.
 
 ### 5.3 Khả năng tái lập
 
@@ -402,11 +405,11 @@ Số lượng cụ thể sẽ chốt sau pilot, dự kiến N_chat ≈ N_tool �
 Mục đích: kiểm tra hạ tầng và kiểm tra **scorer chấm đúng**, **chưa** để kết luận. Pilot không đặt yêu cầu nào về kết quả học: một pilot ngắn không cải thiện gì cũng là kết quả hợp lệ, và không phải lý do để sửa metric. Ngoại lệ duy nhất là **tiêu chí đi/dừng về độ đủ mạnh của model** dưới đây, chốt từ trước pilot: nó chỉ quyết định dùng model nào, không bao giờ dùng để sửa metric hay ngưỡng.
 - [x] Eval E0 trên dev (base zero-shot / few-shot, các model Instruct)
 - [x] Chạy E2 với khoảng 10% dữ liệu, 1 seed, eval dev ở các checkpoint (EXPERIMENTS.md, "Pilot: E2 10%")
-- [ ] Đo: thời gian train mỗi 1k mẫu, thời gian eval mỗi checkpoint, bộ nhớ GPU
+- [x] Đo: thời gian train mỗi 1k mẫu, thời gian eval mỗi checkpoint, bộ nhớ GPU (EXPERIMENTS.md, "sweep lr, kiểm resume, thời gian train")
 - [ ] Kiểm tra bằng mắt: mask đúng, model dừng đúng `<|im_end|>`, parser không bỏ sót
 - [x] **Kiểm tra độ nhạy của scorer** (2026-10-26, `src/eval/sensitivity.py`, mọi mẫu dev + test, 0 lệch; EXPERIMENTS.md) bằng một bộ output **dựng có chủ đích** cho từng nhóm: output đúng, và output mắc từng lỗi đã biết (sai tên tool, thiếu hoặc thừa tham số, sai kiểu dữ liệu, JSON hỏng, gọi tool khi không cần, hỏi lại sai tham số, trả lời phủ định giá trị đúng…). Mỗi lỗi phải bị chấm sai, mỗi output đúng phải được chấm đúng.
 - [x] Rà bằng tay khoảng 50 output thật của pilot, so điểm của scorer với điểm chấm tay (EXPERIMENTS.md, "Chấm tay 50 output": trùng 49/50 sau khi sửa luật so số)
-- [ ] Kiểm tra resume (mục 5.3)
+- [x] Kiểm tra resume (mục 5.3) (2026-10-26, quy mô thật: run lr 5e-5 dừng ở step 50 rồi resume từ Hub)
 - [x] **Tiêu chí đi/dừng cho model** (2026-10-26: đạt (a) và (b), giữ SmolLM2-360M; EXPERIMENTS.md, "bootstrap CI và tiêu chí đi/dừng") (chỉ dùng dev, đọc ở checkpoint cuối của pilot E2, so với base zero-shot):
   - **(a) Lõi:** `format_valid` và `call_exact` của nhóm Single trên T-seen đều tăng ≥ 0.2, cận dưới CI của hiệu số > 0.
   - **(b) Nhóm khó:** ít nhất một trong `call_exact` T-unseen (Single), `clarify_correct`, `grounded_correct` có cận dưới CI của hiệu số > 0.
