@@ -3,5 +3,6 @@ base: configs/train_base.yaml
 run_name: e2_pilot
 order: mix
 fraction: 0.1
+learning_rate: 2.0e-5           # the pilot ran before the sweep; kept so it stays reproducible
 output_dir: results/runs/e2_pilot
 hub_model_id: null             # e.g. <username>/smollm2-360m-e2-pilot; pass --hub-model-id on Colab
