@@ -242,16 +242,18 @@ Trong H1 và H2, "xuất hiện" nghĩa là **t_reach**. t_improve được báo
 - Bootstrap 95%, 2000 lần lấy mẫu lại. Mọi so sánh dùng **CI của hiệu số**.
 - **Theo cặp:** so sánh trên cùng tập prompt (giữa hai checkpoint, giữa T-seen và T-rename là cùng prompt gốc, giữa hai run) thì lấy mẫu lại *cùng một tập chỉ số prompt* cho cả hai bên.
 - **Theo cụm:** các prompt chung tool hoặc chung template nguồn được lấy mẫu lại **theo cụm** (cluster bootstrap), vì chúng không độc lập.
+- *Cụm khi lấy mẫu lại (2026-10-26):* hai prompt chung cụm khi có cùng lượt user đầu, hoặc chung một tool quyết định đáp án. Đó là tool được gọi ở Single/Select/Parallel, và tool được cung cấp ở Missing-info/Multi-turn. Tool của No-tool là tool nhiễu nên không nối. Cụm là thành phần liên thông của quan hệ này, tính riêng trong từng tập mẫu đem chấm. T-rename dùng quan hệ của mẫu T-seen gốc. Đã thử gom theo cụm chức năng (`meta.clusters`, gồm cả tool nhiễu) nhưng không dùng được: Select/Parallel T-seen dev dồn hết vào một cụm. Mọi checkpoint dùng cùng các lần rút cụm, nên hiệu số là theo cặp. Code ở `src/eval/stats.py`.
 - **Tách hai nguồn bất định:** (a) bất định do tập prompt → bootstrap ở trên, trong từng seed; (b) biến thiên do seed huấn luyện → độ lệch chuẩn giữa 3 seed. Báo cáo cả hai, không gộp làm một.
 
 ### 3.6 Quy tắc chạy eval
 
 - Decoding **greedy**, `max_new_tokens=256`, cấu hình dừng theo mục 2.4. Batch generate với left padding.
+  - *Bộ C dùng 512 (2026-10-26).* Ở pilot, khoảng 1/5 câu trả lời mẫu của C dài hơn 256 token (dev 11/50, test 24/150, ước theo số từ). Với 256, `stop_rate` C bị chặn trên quanh 0.8 vì cấu hình chứ không vì hành vi. Ở 512 chỉ còn 1/50 và 2/150 câu mẫu dài hơn. Không chọn cách chỉ tính `stop_rate` trên phần không bị cắt: khoảng một nửa số mẫu C bị cắt ở pilot là lặp vòng, tức lỗi dừng thật. Các bộ khác giữ 256. `metrics.json` ghi giới hạn của từng bộ.
 - Base model được eval theo hai cách:
   - **zero-shot** với template;
   - **few-shot** với 3 ví dụ cố định. Các ví dụ này dùng tool nằm ngoài mọi bộ eval.
 - Các model Instruct được eval bằng chat template **riêng** của chúng. Ghi rõ trong bảng kết quả rằng format khác nhau.
-- Kết quả được ghi vào `results/<run>/<checkpoint>/metrics.json`, sau đó gộp thành `results/all.csv` với các cột: `run, seed, step, tokens_seen, assistant_tokens_seen, split, eval_set, group, metric, value, ci_low, ci_high`.
+- Kết quả được ghi vào `results/<run>/<checkpoint>/metrics.json`, sau đó gộp thành `results/all.csv` với các cột: `run, seed, step, tokens_seen, assistant_tokens_seen, split, eval_set, group, metric, value, ci_low, ci_high`. Thêm cột `checkpoint`, vì các model của E0 không có step. `python -m src.eval.stats` ghi thêm hai file: `diff_base.csv` (hiệu số so với base zero-shot, kèm CI) và `emergence.csv` (t_reach theo từng ngưỡng, t_improve). Với test, tên file có thêm hậu tố `_test`.
 - Output thô được lưu vào `results/<run>/<checkpoint>/outputs.jsonl` để xem lại và chấm lại khi cần.
 - **Thời gian eval:** mục tiêu ≤ 10 phút mỗi checkpoint (bộ P + dev, hoặc test không gồm BFCL và G). Con số này **phải được đo ở pilot** (mục 6, Giai đoạn 2). Nếu vượt, giảm số checkpoint được chạy test đầy đủ, không giảm cỡ mẫu.
 
@@ -402,10 +404,10 @@ Mục đích: kiểm tra hạ tầng và kiểm tra **scorer chấm đúng**, **
 - [x] Chạy E2 với khoảng 10% dữ liệu, 1 seed, eval dev ở các checkpoint (EXPERIMENTS.md, "Pilot: E2 10%")
 - [ ] Đo: thời gian train mỗi 1k mẫu, thời gian eval mỗi checkpoint, bộ nhớ GPU
 - [ ] Kiểm tra bằng mắt: mask đúng, model dừng đúng `<|im_end|>`, parser không bỏ sót
-- [ ] **Kiểm tra độ nhạy của scorer** bằng một bộ output **dựng có chủ đích** cho từng nhóm: output đúng, và output mắc từng lỗi đã biết (sai tên tool, thiếu hoặc thừa tham số, sai kiểu dữ liệu, JSON hỏng, gọi tool khi không cần, hỏi lại sai tham số, trả lời phủ định giá trị đúng…). Mỗi lỗi phải bị chấm sai, mỗi output đúng phải được chấm đúng.
-- [ ] Rà bằng tay khoảng 50 output thật của pilot, so điểm của scorer với điểm chấm tay
+- [x] **Kiểm tra độ nhạy của scorer** (2026-10-26, `src/eval/sensitivity.py`, mọi mẫu dev + test, 0 lệch; EXPERIMENTS.md) bằng một bộ output **dựng có chủ đích** cho từng nhóm: output đúng, và output mắc từng lỗi đã biết (sai tên tool, thiếu hoặc thừa tham số, sai kiểu dữ liệu, JSON hỏng, gọi tool khi không cần, hỏi lại sai tham số, trả lời phủ định giá trị đúng…). Mỗi lỗi phải bị chấm sai, mỗi output đúng phải được chấm đúng.
+- [x] Rà bằng tay khoảng 50 output thật của pilot, so điểm của scorer với điểm chấm tay (EXPERIMENTS.md, "Chấm tay 50 output": trùng 49/50 sau khi sửa luật so số)
 - [ ] Kiểm tra resume (mục 5.3)
-- [ ] **Tiêu chí đi/dừng cho model** (chỉ dùng dev, đọc ở checkpoint cuối của pilot E2, so với base zero-shot):
+- [x] **Tiêu chí đi/dừng cho model** (2026-10-26: đạt (a) và (b), giữ SmolLM2-360M; EXPERIMENTS.md, "bootstrap CI và tiêu chí đi/dừng") (chỉ dùng dev, đọc ở checkpoint cuối của pilot E2, so với base zero-shot):
   - **(a) Lõi:** `format_valid` và `call_exact` của nhóm Single trên T-seen đều tăng ≥ 0.2, cận dưới CI của hiệu số > 0.
   - **(b) Nhóm khó:** ít nhất một trong `call_exact` T-unseen (Single), `clarify_correct`, `grounded_correct` có cận dưới CI của hiệu số > 0.
   - **Đạt (a) và (b):** giữ SmolLM2-360M.

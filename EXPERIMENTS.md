@@ -175,3 +175,75 @@ Snapshot cuối: perplexity wikitext-2 là 13.19 (base 13.01, 360M-Instruct 14.5
 - **T-unseen cao hơn T-seen ở `call_exact`** (Single: 0.76 so với 0.48). Pool unseen nhiều bài tính toán với lời gọi đơn giản, nên chưa thể hiểu là "tổng quát hóa tốt". Cần xem output và phần so khớp theo độ khó (PLAN 4.2 ý 5).
 - **Bộ C bị cắt nhiều:** 24–28% câu trả lời chạm `max_new_tokens` = 256, vì câu trả lời chat của SmolTalk dài. `stop_rate` của C vì vậy bị chặn trên bởi cấu hình eval chứ không phải hành vi (PLAN 2.4). Cần bàn trước khi khóa giao thức: tăng `max_new_tokens` cho C, hoặc báo `stop_rate` C chỉ trên phần không bị cắt.
 - **Chưa làm:** bootstrap CI (cần cho tiêu chí đi/dừng), chấm tay 50 output, bộ output dựng có chủ đích, kiểm resume ở quy mô thật, đo thời gian train thuần, và sweep lr.
+
+## 2026-10-26 — Pilot: bootstrap CI và tiêu chí đi/dừng
+
+**Loại hoạt động:** pilot (PLAN §6, Giai đoạn 2), chỉ dùng dev. Tính offline từ `outputs.jsonl` của E0 và của 6 snapshot pilot E2 10%; không generate lại.
+
+**Cách tính:** `python -m src.eval.stats --go-no-go e2_pilot`, mất khoảng 7 giây.
+- Bootstrap 95% theo phân vị, 2000 lần. Lấy mẫu lại theo cụm, cách gom cụm như PLAN §3.5 (2026-10-26). Hiệu số so với base zero-shot là theo cặp.
+- Kết quả ra `results/all.csv`, `diff_base.csv`, `emergence.csv` (git-ignore).
+- Trước khi sửa scorer (xem mục chấm tay bên dưới), điểm đã lưu khớp scorer: chấm lại không đổi mẫu nào. Giá trị điểm trong `all.csv` trùng `metrics.json` ở cả 2466 dòng. Bảng dưới là số sau khi sửa và chấm lại.
+- Cụm ở dev (33 mẫu mỗi nhóm) phần lớn chỉ 1–4 mẫu. Riêng Multi-turn gom mạnh hơn: T-seen 19 cụm, T-unseen 13 cụm, cụm lớn nhất 10 mẫu.
+
+**Snapshot cuối (step 125), giá trị [CI 95%] và cận dưới CI của hiệu số so với base zero-shot.** Số đã tính lại sau khi sửa scorer (`grounded_correct` T-unseen trước khi sửa là 0.82):
+
+| Nhóm | Metric | T-seen | T-unseen |
+|---|---|---|---|
+| tất cả | `stop_rate` | 0.95 [0.92, 0.98], +0.92 | 0.96 [0.93, 0.98], +0.93 |
+| 4 nhóm tool | `format_valid` | 0.98 [0.95, 1.00], +0.95 | 0.95 [0.90, 0.98], +0.90 |
+| 4 nhóm tool | `call_exact` | 0.46 [0.37, 0.56], +0.37 | 0.61 [0.50, 0.70], +0.50 |
+| Single | `call_exact` | 0.48 [0.33, 0.64], +0.33 | 0.76 [0.61, 0.88], +0.61 |
+| 4 nhóm tool | `decision_bacc` | 0.82 [0.73, 0.90], +0.23 | 0.86 [0.78, 0.93], +0.28 |
+| No-tool | `false_call_rate` | 0.36 [0.21, 0.55] | 0.27 [0.12, 0.42] |
+| Missing-info | `clarify_correct` | 0.12 [0.03, 0.25], +0.03 | 0.15 [0.03, 0.31], +0.03 |
+| Multi-turn | `grounded_correct` | 0.88 [0.75, 0.97], +0.75 | 0.91 [0.74, 1.00], +0.74 |
+| Multi-turn | `grounded_correct_not_derivable` | 0.64 [0.33, 0.90], +0.33 | 0.75 [0.51, 1.00], +0.51 |
+
+Bộ C, `stop_rate`: 0.72 [0.58, 0.84]; `truncated_rate`: 0.28 [0.16, 0.42].
+
+**Tiêu chí đi/dừng (PLAN §6), theo scorer:**
+- **(a) đạt.** Single T-seen: `format_valid` từ 0 lên 1.00 (hiệu số +1.00, CI [+1.00, +1.00]); `call_exact` từ 0 lên 0.48 (+0.48, CI [+0.33, +0.64]).
+- **(b) đạt, rõ nhất ở hai metric.** `call_exact` Single T-unseen có cận dưới CI +0.61; `grounded_correct` có cận dưới +0.75 (seen) và +0.74 (unseen). `clarify_correct` chỉ vừa qua 0, cận dưới +0.03.
+- **Kết luận theo luật đã chốt trước pilot: đạt (a) và (b), giữ SmolLM2-360M.** Chấm tay bên dưới xác nhận hai metric chính của (b). Luật `grounded_correct` trùng chấm tay ở 11/12 mẫu sau khi sửa. `call_exact` T-unseen cao hơn T-seen là do mẫu T-unseen dễ hơn, không phải do scorer.
+
+**t_reach / t_improve** (base zero-shot là step 0; một seed, chỉ để kiểm cách tính):
+- `format_valid`, `stop_rate`: đạt θ = 0.5 ở step 19–37 (khoảng 100k–200k token assistant). t_improve ở step 19.
+- `call_exact` T-seen: không đạt θ = 0.5. Chỉ đạt θ = 0.3, ở step 37.
+- `tool_name_acc` ≥ 0.7 và `decision_bacc` T-unseen ≥ 0.85: ghi "chưa xác nhận", vì chỉ thỏa từ step 76, sau đó còn đúng một checkpoint.
+- `clarify_correct`: không đạt ở ngưỡng nào, kể cả t_improve.
+- `false_call_rate` ở step 19 là 0.67 [0.52, 0.82] (seen) và 0.70 [0.52, 0.85] (unseen): đỉnh ở step 19 không phải nhiễu của tập prompt. Vẫn mới một seed.
+
+### Chấm tay 50 output (snapshot step 125)
+
+Rút ngẫu nhiên, seed 0, phân tầng theo nhóm: Missing-info 12, Multi-turn 12, Single 12 (mỗi loại 6 mẫu T-seen và 6 mẫu T-unseen), No-tool 7, C 7. Mỗi mẫu được chấm tay rồi so với metric chính của nhóm.
+- **Trùng scorer:** 48/50 trước khi sửa, 49/50 sau khi sửa.
+- **Missing-info, 12/12 trùng.** Cả 12 mẫu: model bịa giá trị cho tham số thiếu rồi gọi tool. Xem thêm cả 10/72 mẫu Missing-info mà model không gọi tool: 9 mẫu hỏi lại đúng tham số và được scorer chấm đúng, 1 mẫu bị cắt. Luật không chặt quá. `clarify_correct` thấp là do model thật.
+  - Lệch nguồn: mẫu xLAM viết lại thì model gọi tool ở 36/36 mẫu, đúng 0. Mẫu Glaive thì đúng 9/30. Train chỉ có Missing-info từ Glaive (`data/TRAIN.md`), nên model chưa học được cách hỏi lại khi câu hỏi theo kiểu xLAM thiếu một tham số.
+- **Multi-turn, 10/12 trùng.**
+  - Sai âm (đã sửa): luật so số như chuỗi, nên "$57.50" không khớp 57.5. `score_grounded` nay bỏ số 0 thừa ở phần thập phân trước khi so; `_normalize` của `build_sets` giữ nguyên nên bộ eval không đổi. Câu trả lời mẫu vẫn đúng 266/266. Mỗi snapshot từ step 37 trở đi có 2–3 mẫu T-unseen chuyển sang đúng; chấm lại bằng `run_eval.rescore`.
+  - Sai dương (chưa sửa): "The discounted price of the product is $30." Ở đây $30 là số tiền được giảm. Luật chỉ kiểm giá trị có xuất hiện, không kiểm vai trò của nó. Trong mẫu này có 1/10 mẫu luật chấm đúng mà chấm tay chấm sai, nên `grounded_correct` có thể cao hơn thực tế đôi chút.
+- **Single, 12/12 trùng** theo định nghĩa khớp hoàn toàn. Có 1 mẫu ở ranh giới: model thêm `source: "en"`, một tham số tùy chọn mà câu hỏi không nêu. Theo định nghĩa thì sai.
+  - Vì sao T-unseen > T-seen: lời gọi đáp án của Single T-seen có trung bình 0.82 tham số tùy chọn, phải suy từ câu (như "Amazon.in" → `country: IN`, "latest" → `sort_by`). T-unseen chỉ có 0.18, phần lớn là bài tính đủ tham số ngay trong câu. Chỉ xét lời gọi toàn tham số bắt buộc: T-seen 0.63 (19 mẫu), T-unseen 0.74 (27 mẫu). Cần so khớp theo độ khó (PLAN 4.2 ý 5) trước khi đọc RQ3.
+- **No-tool, 7/7 trùng** về quyết định gọi/không gọi. Hai mẫu không gọi tool nhưng câu trả lời kém (lặp vòng tới khi bị cắt; nói "không có tool" rồi hỏi lại câu không liên quan), mà `false_call_rate` không đo chất lượng câu trả lời.
+- **C, 7/7 trùng về `stop_rate`.** Có 1/50 mẫu C sinh `<tool_call>` hỏng trong khi không có tool nào, và không metric nào bắt được trường hợp này.
+- **Bộ C bị cắt** (14/50 ở step 125): khoảng một nửa là lặp vòng (repetition ≥ 0.3), tức lỗi dừng thật; phần còn lại là câu trả lời dài hợp lệ. Ước theo số từ, khoảng 22% câu trả lời mẫu của dev (11/50) và 16% của test (24/150) dài hơn 256 token, nên `stop_rate` C bị chặn trên khoảng 0.8. Ở 512 token chỉ còn 1/50 và 2/150. **Đã quyết (2026-10-26): bộ C dùng `max_new_tokens` = 512, các bộ khác giữ 256** (PLAN §3.6). Số liệu C của E0 và của pilot ở trên chạy với 256, nên không so được với các lần chạy sau. Trước khi khóa giao thức cần chạy lại riêng bộ C cho E0, và cho pilot nếu cần.
+
+### Bộ output dựng có chủ đích kiểm độ nhạy scorer
+
+`python -m src.eval.sensitivity` dựng output từ nhãn của **mọi** mẫu dev và test. Mỗi mẫu có một output đúng và các output mắc từng lỗi đã biết. Mỗi output được chấm bằng `run_eval.score`, rồi so với kết quả kỳ vọng.
+
+**Các lỗi dựng cho từng nhóm:**
+- Single/Select/Parallel: sai tên tool, thiếu tham số, thừa tham số, sai kiểu (5 → "5", "Hanoi" → ["Hanoi"]), sai giá trị, JSON hỏng, không gọi tool, gọi lặp, bỏ một lời gọi (Parallel). Thêm một biến thể đúng có chữ bao quanh lời gọi: `call_exact` vẫn đúng, `strict_format` sai.
+- No-tool: gọi tool khi không cần.
+- Missing-info: hỏi sai tham số, không hỏi, gọi tool, bị cắt.
+- Multi-turn: thiếu giá trị, phủ định giá trị đúng ("It is not 31"), gọi lại tool, bị cắt. Câu trả lời mẫu và câu nêu đủ giá trị phải được chấm đúng.
+
+**Kết quả:** mọi cặp (mẫu, biến thể) đều chấm đúng kỳ vọng, 0 lệch. Trong đó 532 mẫu cho mỗi nhóm gọi tool, 266 cho mỗi nhóm còn lại; Single/Select thiếu khoảng 8–9 mẫu ở ba lỗi về tham số vì lời gọi không có tham số nào.
+
+**Kiểm chính phép thử:** làm hỏng scorer có chủ đích thì phép thử bắt được. Tắt luật phủ định: 266/266 mẫu `negated_value` bị phát hiện. Cho `canonical` bỏ qua giá trị: 524/524 mẫu `wrong_value` bị phát hiện.
+
+**Giới hạn:**
+- Không mẫu Multi-turn nào có nhãn `forbidden`, nên luật giá trị cấm chỉ được kiểm bằng unit test, chưa chạy trên nhãn thật.
+- Ở 122/266 mẫu Missing-info, mọi tham số khác của tool đều trùng từ đồng nghĩa, nên lỗi "hỏi sai tham số" phải dùng một tham số giả.
+- Bộ này chỉ kiểm lỗi đã biết. Lỗi về vai trò của giá trị ("giá sau giảm là $30", khi $30 là số tiền được giảm) không bị bắt; xem mục chấm tay.
