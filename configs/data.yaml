@@ -109,8 +109,10 @@ train_sets:
   n_tool: 10000
   shares: {multi_turn: 0.2, missing_info: 0.1, no_tool: 0.2}   # decided 2026-10-24; the rest is xLAM calls
   call_split: {single: 0.34, select: 0.34}                      # parallel takes the rest of the calls
+  missing_info_rewrite:          # 2026-10-26: xLAM rewrites fill the Glaive Missing-info shortfall (labels on the Hub)
+    draft_margin: 1.4
   notes:                         # rendered into data/TRAIN.md
-    - "Missing-info: Glaive chỉ có 694 câu mở đầu khác nhau thỏa luật lọc (pool 5267, phần lớn lặp lại), nên 306 mẫu thiếu chuyển sang ba nhóm gọi tool; nhóm gọi tool chiếm khoảng 53% D_tool."
+    - "Missing-info: Glaive chỉ có 694 câu mở đầu khác nhau thỏa luật lọc (pool 5267, phần lớn lặp lại). Trước 2026-10-26, 306 mẫu thiếu chuyển sang ba nhóm gọi tool (khoảng 53% D_tool, bản pilot dùng); nay chúng được lấp bằng câu hỏi xLAM viết lại."
     - "Token assistant: D_chat khoảng 2.30 triệu, D_tool khoảng 0.97 triệu. Khi trộn (E2), khoảng 70% token có loss là chat."
     - "Rà ngẫu nhiên 200 mẫu No-tool của D_tool (PLAN 4.3, subagent độc lập, 2026-10-24): 0/200 sai nhãn (không gọi tool là đúng ở mọi mẫu, cả 28 mẫu no_fitting_tool đều cần dữ liệu ngoài). 15/200 có câu trả lời SmolTalk kém: 9 sai hẳn (toán, code, kiến thức), 4 vi phạm ràng buộc của smol-summarize (quá 3 câu, đại từ ngôi 2/3), 2 ở ranh giới. Đây là chất lượng của nguồn SmolTalk, cũng có trong D_chat vốn không lọc, không phải lỗi bộ lọc No-tool."
   no_tool:                       # drafted like the eval No-tool (eval_sets.no_tool), with less margin

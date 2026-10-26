@@ -4,9 +4,12 @@ Run: python -m src.data.train_sets --config configs/data.yaml [--from-hub USER/R
 Reads data/split/{train,tools}.jsonl, the frozen eval sets (eval_sets/{dev,test}/*.jsonl) and P (eval_sets/p.jsonl);
 writes data/train/{d_chat,d_tool}.jsonl, data/train/drafts/no_tool.jsonl (Git-ignored) and data/TRAIN.md (tracked).
 
-D_tool mixes, by share of n_tool: xLAM calls (single / select / parallel), Glaive Multi-turn, Glaive Missing-info
-and No-tool. Missing-info keeps only conversations whose later call needs a required value the first user turn
-does not state; when the pool runs short, the rest goes to the call groups. No-tool is drafted the way the eval
+D_tool mixes, by share of n_tool: xLAM calls (single / select / parallel), Glaive Multi-turn, Missing-info and
+No-tool. Glaive Missing-info keeps only conversations whose later call needs a required value the first user turn
+does not state; the Glaive pool runs short, and the rest is filled with xLAM requests rewritten to lack a required
+value (drafted like the eval's rewrites, src.eval.build_sets.rewrite_draft; labels in
+data/train/labels/missing_info_rewrite.jsonl hold the rewritten query and the question back). Without the rewrite
+settings the shortfall goes to the call groups instead. No-tool is drafted the way the eval
 drafts it (src.eval.build_sets.no_tool_drafts), from held-in chat prompts D_chat does not use and from xLAM
 requests D_tool does not use, offered seen tools only; a labelling pass (data/train/labels/no_tool.jsonl, on the
 Hub) keeps each draft that is a self-contained request no offered tool helps with; a label names the tools it saw
@@ -19,6 +22,7 @@ settings) of the first user turn are skipped.
 import argparse
 from collections import Counter, defaultdict
 import json
+import math
 from pathlib import Path
 import random
 import statistics
@@ -26,8 +30,10 @@ import sys
 
 from src.data.split import embed_texts, tool_text, write_jsonl
 from src.eval.build_sets import (
-    CALL_GROUPS, NO_TOOL_KINDS, GrowingIndex, call_item, clarify_draft, no_tool_drafts, side_tools, user_text, with_id,
+    CALL_GROUPS, NO_TOOL_KINDS, GrowingIndex, apply_rewrite, call_item, clarify_draft, no_tool_drafts, rewrite_draft,
+    side_tools, user_text, with_id,
 )
+from src.eval.scorers import score_clarify
 
 
 TOOL_GROUPS = (*CALL_GROUPS, "multi_turn", "missing_info", "no_tool")
@@ -107,8 +113,29 @@ def no_tool_example(draft: dict) -> dict:
             "meta": {**draft["meta"], "n_tools": len(draft["tools"])}}
 
 
-def run(pool: list, tools: list, eval_items: list, config: dict, *, labels=None, embed=embed_texts,
-        measure=None) -> dict:
+def rewrite_drafts(by_group: dict, taken: set, n: int, index: GrowingIndex, *, rng) -> tuple[list, Counter]:
+    """Missing-info drafts from xLAM single/select requests no other part of the train sets uses: the request states
+    a required value, which the labelling pass removes (src.eval.build_sets.rewrite_draft)."""
+    candidates = [{**with_id(example, item, "train"), "id": f"train:{example['id']}:rewrite"}
+                  for group in ("single", "select") for example in by_group[group] if example["id"] not in taken
+                  for item in [rewrite_draft(example)] if item is not None]
+    return take(candidates, n, index, rng=rng)
+
+
+def rewrite_example(draft: dict, label: dict) -> dict:
+    """A labelled rewrite as a train conversation: the rewritten request, then the question back. The label is
+    checked the way the eval's rewrites are, and the reply must pass score_clarify."""
+    item = apply_rewrite(draft, label)  # raises when the param is not removable or the query still states it
+    reply = label["reply"]
+    if not score_clarify(reply, missing_param=item["missing_param"], synonyms=item["synonyms"])["clarify_correct"]:
+        raise ValueError(f"{draft['id']}: the reply does not ask for {item['missing_param']}")
+    return {"id": draft["id"], "source": draft["meta"]["source"], "group": "missing_info", "tools": draft["tools"],
+            "turns": [*item["turns"], {"role": "assistant", "content": reply}],
+            "meta": {**item["meta"], "missing_param": item["missing_param"], "synonyms": item["synonyms"]}}
+
+
+def run(pool: list, tools: list, eval_items: list, config: dict, *, labels=None, rewrite_labels=None,
+        embed=embed_texts, measure=None) -> dict:
     """measure(example) -> token count or None when over max_seq_len; only new No-tool conversations need it."""
     settings, seed = config["train_sets"], config["seed"]
     rng = random.Random(seed)
@@ -133,7 +160,11 @@ def run(pool: list, tools: list, eval_items: list, config: dict, *, labels=None,
     stats["missing_info"] = {"available": len(by_group["clarify_candidate"]), "filtered": len(clarify),
                              "wanted": counts["missing_info"], "picked": len(picked["missing_info"]),
                              "skipped": dict(skipped)}
-    counts = spread(counts["missing_info"] - len(picked["missing_info"]), counts)
+    shortfall = counts["missing_info"] - len(picked["missing_info"])
+    target_counts = counts
+    # The call groups are drawn at their size before any rewrite fills the shortfall, so No-tool (drafted from what
+    # they leave) stays as labelled; filled rewrites then take the place of the last call items of each group.
+    counts = spread(shortfall, counts)
     picked["multi_turn"], skipped = take(by_group["multi_turn"], counts["multi_turn"], index, rng=rng)
     stats["multi_turn"] = {"available": len(by_group["multi_turn"]), "wanted": counts["multi_turn"],
                            "picked": len(picked["multi_turn"]), "skipped": dict(skipped)}
@@ -160,6 +191,47 @@ def run(pool: list, tools: list, eval_items: list, config: dict, *, labels=None,
     drafts, stats["no_tool_drafts"] = no_tool_drafts(
         "train", offer, prompts, prompt_vectors, singles, catalog, settings, index, random.Random(f"{seed}:no_tool"),
         want=counts["no_tool"], offer_rng=lambda draft_id: random.Random(f"{seed}:offer:{draft_id}"))
+
+    rewrite_settings = settings.get("missing_info_rewrite")
+    rewrites, kept_rewrites = [], []
+    if rewrite_settings and shortfall:
+        taken = used | {draft["meta"]["source_id"] for draft in drafts}
+        rewrites, skipped = rewrite_drafts(by_group, taken, math.ceil(shortfall * rewrite_settings["draft_margin"]),
+                                           index, rng=random.Random(f"{seed}:rewrite"))
+        stats["missing_info_rewrite"] = {"wanted": shortfall, "drafts": len(rewrites), "skipped": dict(skipped),
+                                         "labelled": 0, "ok": 0, "picked": 0, "repeated": 0, "too_long": 0}
+        if rewrite_labels is not None:
+            by_id = {label["id"]: label for label in rewrite_labels}
+            stat = stats["missing_info_rewrite"]
+            stat["labelled"] = sum(draft["id"] in by_id for draft in rewrites)
+            stat["ok"] = sum(by_id.get(draft["id"], {}).get("ok", False) for draft in rewrites)
+            for draft in rewrites:
+                if len(kept_rewrites) == shortfall:
+                    break
+                label = by_id.get(draft["id"])
+                if not (label and label.get("ok")):
+                    continue
+                example = rewrite_example(draft, label)
+                if index.match(label["query"]):
+                    stat["repeated"] += 1
+                    continue
+                n_tokens = measure(example) if measure else 0
+                if n_tokens is None:
+                    stat["too_long"] += 1
+                    continue
+                index.add(label["query"])
+                example["meta"]["n_tokens"] = n_tokens
+                kept_rewrites.append(example)
+            stat["picked"] = len(kept_rewrites)
+    if kept_rewrites:
+        picked["missing_info"] += kept_rewrites
+        final = spread(shortfall - len(kept_rewrites), target_counts)
+        for group in CALL_GROUPS:
+            picked[group] = picked[group][:final[group]]
+            stats[group]["wanted"] = final[group]
+            stats[group]["picked"] = len(picked[group])
+        counts = final
+    rewrites_done = not (rewrite_settings and shortfall) or len(kept_rewrites) == shortfall
 
     stats["no_tool"] = {"wanted": counts["no_tool"], "drafts": len(drafts), "labelled": 0, "picked": 0}
     d_tool = None
@@ -194,14 +266,14 @@ def run(pool: list, tools: list, eval_items: list, config: dict, *, labels=None,
             stats["no_tool"][kind] = {"wanted": want[kind], "picked": len(kept), "too_long": too_long[kind]}
             picked["no_tool"] += kept
         stats["no_tool"]["picked"] = len(picked["no_tool"])
-        if all(stats["no_tool"][kind]["picked"] == want[kind] for kind in NO_TOOL_KINDS):
+        if rewrites_done and all(stats["no_tool"][kind]["picked"] == want[kind] for kind in NO_TOOL_KINDS):
             d_tool = [train_item(example, group) for group in TOOL_GROUPS if group != "no_tool"
                       for example in picked[group]] + picked["no_tool"]
             random.Random(f"{seed}:d_tool").shuffle(d_tool)  # A prefix (the pilot's 10%) keeps the mix.
     d_chat = [train_item(example, "chat") for example in d_chat]
     random.Random(f"{seed}:d_chat").shuffle(d_chat)
-    return {"d_chat": d_chat, "d_tool": d_tool, "drafts": drafts, "stats": stats, "targets": counts,
-            "n_eval_prompts": len(eval_items)}
+    return {"d_chat": d_chat, "d_tool": d_tool, "drafts": drafts, "rewrite_drafts": rewrites, "stats": stats,
+            "targets": counts, "n_eval_prompts": len(eval_items)}
 
 
 def summarize(items: list) -> dict:
@@ -222,15 +294,28 @@ def render_report(result: dict, config: dict, hashes: dict) -> str:
              "hoặc gần trùng (MinHash, cùng tham số với bước tách) thì bị bỏ qua.", "",
              "## Tỉ lệ D_tool", "",
              "Đã chốt (2026-10-24): 50% gọi tool xLAM (single / select / parallel chia gần đều), 20% Multi-turn, "
-             "10% Missing-info, 20% No-tool. Missing-info chỉ lấy từ Glaive, giữ hội thoại có lời gọi sau cần một tham "
-             "số bắt buộc mà lượt user đầu chưa nêu; pool thiếu thì phần thiếu chuyển sang ba nhóm gọi tool. Khác bộ "
-             "eval (nửa Glaive, nửa câu hỏi xLAM viết lại): nguồn Missing-info của train và eval lệch nhau.", "",
+             "10% Missing-info, 20% No-tool. Missing-info lấy trước từ Glaive (giữ hội thoại có lời gọi sau cần một "
+             "tham số bắt buộc mà lượt user đầu chưa nêu). Từ 2026-10-26, phần Glaive thiếu được lấp bằng câu hỏi xLAM "
+             "viết lại cho thiếu một tham số bắt buộc, giống cách dựng bộ eval, vì pilot cho thấy model chỉ học hỏi lại "
+             "trên kiểu câu Glaive (mẫu xLAM viết lại đúng 0/36). Nhóm gọi tool vẫn được rút với cỡ như trước khi lấp, "
+             "để nháp No-tool không đổi; mẫu viết lại thay chỗ các mẫu cuối của mỗi nhóm gọi tool.", "",
              "| Nhóm | Pool | Sau lọc | Cần | Lấy | Bỏ vì trùng |", "|---|---|---|---|---|---|"]
     for group in ("chat", *CALL_GROUPS, "multi_turn", "missing_info"):
         stat = stats[group]
         skipped = ", ".join(f"{kind}: {count}" for kind, count in stat["skipped"].items()) or "–"
         lines.append(f"| {group} | {stat['available']} | {stat.get('filtered', '–')} | {stat['wanted']} | "
                      f"{stat['picked']} | {skipped} |")
+    if "missing_info_rewrite" in stats:
+        stat = stats["missing_info_rewrite"]
+        lines += ["", "## Missing-info viết lại từ xLAM", "",
+                  "Nháp: câu hỏi xLAM single/select chưa dùng ở đâu trong tập train, có nêu giá trị của một tham số bắt "
+                  "buộc (`src.eval.build_sets.rewrite_draft`). Nhãn (`labels/missing_info_rewrite.jsonl`): câu hỏi viết "
+                  "lại không còn giá trị đó, `missing_param`, từ đồng nghĩa và câu hỏi lại của assistant. Kiểm như bộ "
+                  "eval (`apply_rewrite`), câu hỏi lại phải đạt `score_clarify`, câu viết lại không được trùng prompt "
+                  "train/eval.", "",
+                  "| Cần | Nháp | Có nhãn | Đạt | Lấy | Bỏ vì trùng | Bỏ vì quá dài |", "|---|---|---|---|---|---|---|",
+                  f"| {stat['wanted']} | {stat['drafts']} | {stat['labelled']} | {stat['ok']} | {stat['picked']} | "
+                  f"{stat['repeated']} | {stat['too_long']} |"]
     no_tool = stats["no_tool"]
     lines += ["", "## No-tool (PLAN 4.3)", "",
               "Nháp dựng như bộ eval: `plain` là prompt chat (ngoài D_chat) kèm tool ở các cụm xa chủ đề nhất; `related` "
@@ -348,18 +433,25 @@ def main():
         fetch(args.from_hub, split_dir, labels_path.parent)
     pool, tools = load_jsonl(split_dir / "train.jsonl"), load_jsonl(split_dir / "tools.jsonl")
     labels = load_jsonl(labels_path) if labels_path.exists() else None
+    rewrite_path = output_dir / "labels" / "missing_info_rewrite.jsonl"
+    rewrite_labels = load_jsonl(rewrite_path) if rewrite_path.exists() else None
     result = run(pool, tools, load_eval_items(Path(config["eval_sets"]["output_dir"])), config, labels=labels,
-                 embed=cached_embed(output_dir / "cache" / "embeddings.npz"), measure=length_measurer(config))
+                 rewrite_labels=rewrite_labels, embed=cached_embed(output_dir / "cache" / "embeddings.npz"),
+                 measure=length_measurer(config))
     (output_dir / "drafts").mkdir(parents=True, exist_ok=True)
     hashes = {"d_chat.jsonl": write_jsonl(output_dir / "d_chat.jsonl", result["d_chat"]),
               "drafts/no_tool.jsonl": write_jsonl(output_dir / "drafts" / "no_tool.jsonl", result["drafts"])}
+    if result["rewrite_drafts"]:
+        hashes["drafts/missing_info_rewrite.jsonl"] = write_jsonl(output_dir / "drafts" / "missing_info_rewrite.jsonl",
+                                                                 result["rewrite_drafts"])
     if result["d_tool"] is not None:
         hashes["d_tool.jsonl"] = write_jsonl(output_dir / "d_tool.jsonl", result["d_tool"])
     Path(args.report).write_text(render_report(result, config, hashes), encoding="utf-8")
     for name, digest in hashes.items():
         print(f"[train_sets] {name}: {digest[:12]}", flush=True)
     if result["d_tool"] is None:
-        sys.exit(f"[train_sets] D_tool not written: label the No-tool drafts in {output_dir}/drafts first")
+        sys.exit(f"[train_sets] D_tool not written: label the No-tool and Missing-info rewrite drafts in "
+                 f"{output_dir}/drafts first")
     if args.push_to:
         push(output_dir, args.push_to)
 

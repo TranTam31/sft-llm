@@ -130,6 +130,56 @@ class RunTests(unittest.TestCase):
         self.assertIsNone(result["d_tool"])
         self.assertEqual(result["stats"]["no_tool"]["related"]["picked"], 0)
 
+    def rewrite_setup(self):
+        """Requests that state their ticker, a Missing-info share the Glaive pool cannot fill, and rewrite settings."""
+        self.pool += [call_example(f"r{i}", f"stock price for ticker QX{i}Z {phrase(f'r{i}')}",
+                                   [{"name": "stock_price", "arguments": {"ticker": f"QX{i}Z"}}], [STOCK])
+                      for i in range(6)]
+        settings = self.config["train_sets"]
+        settings["shares"] = {"multi_turn": 0.2, "missing_info": 0.25, "no_tool": 0.2}
+        settings["missing_info_rewrite"] = {"draft_margin": 1.5}
+
+    def rewrite_label(self, draft, **fields):
+        return {"id": draft["id"], "ok": True, "missing_param": "ticker", "synonyms": ["ticker symbol", "which stock"],
+                "query": f"stock price for a company please {phrase(draft['id'])}",
+                "reply": "Sure. Which ticker symbol should I look up?", **fields}
+
+    def test_rewrites_fill_the_missing_info_shortfall_and_take_the_last_call_items(self):
+        self.rewrite_setup()
+        first = self.build()
+        rewrites = first["rewrite_drafts"]
+        self.assertEqual(len(rewrites), 3)                       # shortfall 2, margin 1.5
+        self.assertTrue(all(draft["id"].startswith("train:r") for draft in rewrites))
+        no_tool = [label(draft) for draft in first["drafts"]]
+        self.assertIsNone(self.build(labels=no_tool)["d_tool"])  # rewrites not labelled yet
+        before = {group: [item["id"] for item in first["d_chat"]] for group in ("chat",)}
+        result = run(self.pool, self.tools, self.eval_items, self.config, labels=no_tool,
+                     rewrite_labels=[self.rewrite_label(draft) for draft in rewrites], embed=fake_embed,
+                     measure=lambda example: 50)
+        d_tool = result["d_tool"]
+        counts = Counter(item["group"] for item in d_tool)
+        self.assertEqual(counts["missing_info"], 5)              # 3 Glaive + 2 rewrites
+        self.assertEqual(sum(counts[group] for group in ("single", "select", "parallel")),
+                         20 - 5 - 4 - 4)
+        added = [item for item in d_tool if item["meta"].get("label_source") == "xlam_rewrite"]
+        self.assertEqual(len(added), 2)
+        self.assertEqual(added[0]["turns"][-1]["role"], "assistant")
+        self.assertNotIn("QX", added[0]["turns"][0]["content"])
+        self.assertEqual(result["drafts"], first["drafts"])      # No-tool drafts stay as labelled
+        self.assertEqual(before["chat"], [item["id"] for item in result["d_chat"]])
+
+    def test_a_rewrite_label_that_still_states_the_value_or_does_not_ask_is_an_error(self):
+        self.rewrite_setup()
+        first = self.build()
+        no_tool = [label(draft) for draft in first["drafts"]]
+        drafts = first["rewrite_drafts"]
+        still_states = [self.rewrite_label(draft, query=draft["turns"][0]["content"]) for draft in drafts]
+        no_question = [self.rewrite_label(draft, reply="Sure, here it is.") for draft in drafts]
+        for bad, labels in (("query", still_states), ("reply", no_question)):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                run(self.pool, self.tools, self.eval_items, self.config, labels=no_tool, rewrite_labels=labels,
+                    embed=fake_embed, measure=lambda example: 50)
+
     def test_a_label_holds_only_for_the_tools_it_saw(self):
         drafts = self.build()["drafts"]
         labels = [label(draft) for draft in drafts]
