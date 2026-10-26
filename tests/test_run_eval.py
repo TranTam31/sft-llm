@@ -117,6 +117,34 @@ class ScoreTests(unittest.TestCase):
             saved = json.loads((folder / "outputs.jsonl").read_text(encoding="utf-8"))
             self.assertFalse(saved["scores"]["clarify_correct"])
 
+    def test_merge_replaces_only_the_regenerated_sets(self):
+        import tempfile
+
+        from src.eval.run_eval import merge_results, write_results
+
+        it = item("missing_info", missing_param="city", synonyms=[])
+        chat = {"id": "c:1", "set": "c", "group": "chat", "tools": [], "turns": [], "reference": "Hi."}
+        with tempfile.TemporaryDirectory() as tmp:
+            root, folder = Path(tmp) / "eval_sets", Path(tmp) / "run"
+            (root / "dev").mkdir(parents=True)
+            (root / "dev" / "t_seen.jsonl").write_text(json.dumps(it) + "\n", encoding="utf-8")
+            old = [{"id": it["id"], "set": "t_seen", "group": "missing_info", "completion": "Which city?<|im_end|>",
+                    "generated_tokens": 3, "stop_reason": "im_end", "scores": {"clarify_correct": False}},
+                   {"id": "c:1", "set": "c", "group": "chat", "completion": "Hello hello", "generated_tokens": 256,
+                    "stop_reason": "max_new_tokens", "scores": score(chat, "Hello hello", "max_new_tokens")}]
+            write_results(folder, old, {"split": "dev", "model": "m", "max_new_tokens": {"c": 256, "t_seen": 256},
+                                        "metrics": {}})
+            new = [{**old[1], "completion": "Hello.<|im_end|>", "generated_tokens": 3, "stop_reason": "im_end",
+                    "scores": score(chat, "Hello.<|im_end|>", "im_end")}]
+            summary = merge_results(folder, new, {"generation_seconds": 1.0, "max_new_tokens": {"c": 512}}, root)
+            self.assertEqual(summary["max_new_tokens"], {"c": 512, "t_seen": 256})
+            self.assertEqual(summary["reruns"][0]["sets"], ["c"])
+            self.assertEqual(summary["metrics"]["c"]["behaviour"]["stop_rate"], 1.0)
+            # The kept sample is scored again under the current rules.
+            self.assertEqual(summary["metrics"]["t_seen"]["groups"]["missing_info"]["clarify_correct"], 1.0)
+            saved = [json.loads(line) for line in (folder / "outputs.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertEqual([r["completion"] for r in saved], ["Which city?<|im_end|>", "Hello.<|im_end|>"])
+
     def test_limit_keeps_the_first_items_of_each_set(self):
         items = [{"set": name, "n": n} for name in ("a", "b") for n in range(3)]
         self.assertEqual([(i["set"], i["n"]) for i in limit_per_set(items, 2)], [("a", 0), ("a", 1), ("b", 0), ("b", 1)])

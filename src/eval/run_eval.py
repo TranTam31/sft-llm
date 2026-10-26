@@ -242,6 +242,26 @@ def rescore(folder: Path, root: Path = ROOT) -> dict:
     return summary
 
 
+def merge_results(folder: Path, records: list[dict], timing: dict, root: Path = ROOT) -> dict:
+    """Replace the saved records of the sets just generated (e.g. C after its token limit changed); the other sets'
+    outputs stay as they were but are scored again under the current rules. The summary notes which sets were redone."""
+    summary = json.loads((folder / "metrics.json").read_text(encoding="utf-8"))
+    sets = set(record["set"] for record in records)
+    kept = [json.loads(line) for line in (folder / "outputs.jsonl").read_text(encoding="utf-8").splitlines() if line]
+    kept = [record for record in kept if record["set"] not in sets]
+    items = {item["id"]: item for item in load_items(
+        summary["split"], root, [name for name in dict.fromkeys(record["set"] for record in kept) if name != "p"], probe=False)}
+    for record in kept:
+        if record["set"] != "p":
+            record["scores"] = score(items[record["id"]], record["completion"], record["stop_reason"])
+    merged = kept + records
+    reruns = [*summary.get("reruns", []), {"sets": sorted(sets), **timing}]
+    limits = {**summary.get("max_new_tokens", {}), **timing.get("max_new_tokens", {})}
+    summary = {**summary, "max_new_tokens": limits, "reruns": reruns, "metrics": aggregate(merged)}
+    write_results(folder, merged, summary)
+    return summary
+
+
 def write_results(folder: Path, records: list[dict], summary: dict) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     with (folder / "outputs.jsonl").open("w", encoding="utf-8") as stream:
@@ -278,6 +298,8 @@ def main():
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--limit", type=int, help="First N items per set, for a quick check; not for reporting.")
+    parser.add_argument("--sets", nargs="+", choices=SETS,
+                        help="Generate only these sets and merge them into the checkpoint's saved results.")
     parser.add_argument("--fetch", metavar="DATASET_REPO", help="Download dev/test from this dataset Hub repo first.")
     args = parser.parse_args()
 
@@ -292,13 +314,16 @@ def main():
         return
     if not (args.run and args.checkpoint):
         parser.error("--run and --checkpoint are required unless --rescore is given")
-    items = load_items(args.split)
+    items = load_items(args.split, sets=args.sets or SETS, probe=not args.sets)
     if args.limit:
         items = limit_per_set(items, args.limit)
     model_id, revision = resolve(args.model, args.revision, args.config)
     model, tokenizer = load_model(model_id, revision, args.device)
     records, timing = run(model, tokenizer, items, template=args.template, few_shot=args.few_shot,
                           batch_size=args.batch_size)
+    if args.sets:
+        print_summary(merge_results(Path("results") / args.run / args.checkpoint, records, timing))
+        return
     summary = {"model": model_id, "revision": revision, "split": args.split, "template": args.template,
                "few_shot": args.few_shot, "limit": args.limit, "batch_size": args.batch_size, "device": args.device,
                **timing, "metrics": aggregate(records)}

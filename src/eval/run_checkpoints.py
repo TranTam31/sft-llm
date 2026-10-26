@@ -2,11 +2,12 @@
 (PLAN 3.6, 3.7).
 
 Run: python -m src.eval.run_checkpoints --run e2_pilot [--hub-model-id USER/REPO] [--split dev] [--batch-size 32]
-     [--fetch DATASET_REPO] [--cleanup]
+     [--fetch DATASET_REPO] [--cleanup] [--sets c]
 Snapshots are read from results/runs/<run>/snapshots/step-NNNNN (written by src.train), or downloaded one at a time
 from snapshots/ of the run's Hub repo. Writes results/<run>/step-NNNNN/{outputs.jsonl,metrics.json}; metrics.json
 carries the snapshot's meta.json (step, tokens_seen, assistant_tokens_seen). Snapshots already scored are skipped, so
-a sweep cut off by a disconnect picks up where it stopped.
+a sweep cut off by a disconnect picks up where it stopped. --sets regenerates only those sets on every scored snapshot
+and merges them into its results (run_eval.merge_results), e.g. after a set's token limit changed.
 """
 
 import argparse
@@ -15,7 +16,8 @@ from pathlib import Path
 import shutil
 
 from src.eval import manifest
-from src.eval.run_eval import aggregate, fetch, load_items, load_model, print_summary, run, write_results
+from src.eval.run_eval import (SETS, aggregate, fetch, load_items, load_model, merge_results, print_summary, run,
+                               write_results)
 
 
 def run_dir(run_name: str) -> Path:
@@ -57,6 +59,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--fetch", metavar="DATASET_REPO", help="Download dev/test from this dataset Hub repo first.")
     parser.add_argument("--cleanup", action="store_true", help="Delete snapshots downloaded here once scored.")
+    parser.add_argument("--sets", nargs="+", choices=SETS, help="Regenerate only these sets on scored snapshots.")
     args = parser.parse_args()
 
     if args.fetch:
@@ -66,9 +69,13 @@ def main():
         raise SystemExit("Eval sets differ from eval_sets/MANIFEST.md: " + "; ".join(problems))
     local = run_dir(args.run) / "snapshots"
     results = Path("results") / args.run
-    names = pending(list_snapshots(local, args.hub_model_id), results)
+    names = list_snapshots(local, args.hub_model_id)
+    if args.sets:
+        names = [name for name in names if name not in pending(names, results)]
+    else:
+        names = pending(names, results)
     print(f"[run_checkpoints] {len(names)} snapshots to score: {names}", flush=True)
-    items = load_items(args.split)
+    items = load_items(args.split, sets=args.sets or SETS, probe=not args.sets)
     for name in names:
         import torch
 
@@ -76,10 +83,13 @@ def main():
         meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
         model, tokenizer = load_model(str(folder), None, args.device)
         records, timing = run(model, tokenizer, items, template="project", few_shot=False, batch_size=args.batch_size)
-        summary = {"model": str(folder), "revision": None, "split": args.split, "template": "project",
-                   "few_shot": False, "limit": None, "batch_size": args.batch_size, "device": args.device,
-                   **timing, "snapshot": meta, "metrics": aggregate(records)}
-        write_results(results / name, records, summary)
+        if args.sets:
+            summary = merge_results(results / name, records, timing)
+        else:
+            summary = {"model": str(folder), "revision": None, "split": args.split, "template": "project",
+                       "few_shot": False, "limit": None, "batch_size": args.batch_size, "device": args.device,
+                       **timing, "snapshot": meta, "metrics": aggregate(records)}
+            write_results(results / name, records, summary)
         print_summary(summary)
         del model
         if torch.cuda.is_available():
