@@ -57,6 +57,16 @@ class TrainLoopTests(unittest.TestCase):
                 self.assertAlmostEqual(resumed[step]["loss"], reference[step]["loss"], places=5)
                 self.assertEqual(resumed[step]["assistant_tokens_seen"], reference[step]["assistant_tokens_seen"])
 
+    def test_step_timer_counts_the_steps_of_this_process(self):
+        from src.train import make_trainer
+
+        with tempfile.TemporaryDirectory() as folder:
+            trainer = make_trainer(tiny_model(), synthetic_features(), self.config(folder), pad_token_id=0,
+                                   stop_after=3)
+            trainer.train()
+        self.assertEqual(trainer.step_timer.steps, 3)
+        self.assertGreater(trainer.step_timer.seconds, 0)
+
     def test_assistant_tokens_seen_counts_supervised_labels(self):
         features = synthetic_features()
         per_epoch = sum(label != -100 for feature in features for label in feature["labels"])

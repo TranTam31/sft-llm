@@ -116,12 +116,31 @@ def make_trainer(model, features, config, *, pad_token_id, stop_after=None, sequ
             logs["tokens_seen"] = self.counter().tokens_seen
             super().log(logs, *args, **kwargs)
 
+    class StepTimer(TrainerCallback):
+        """Seconds inside training steps only (forward, backward, optimizer): snapshots, validation and checkpoint
+        pushes happen between steps, so they are left out (PLAN 6: train time per 1k samples)."""
+
+        def __init__(self):
+            self.seconds, self.steps, self.started = 0.0, 0, None
+
+        def on_step_begin(self, args, state, control, **kwargs):
+            self.started = perf_counter()
+
+        def on_step_end(self, args, state, control, **kwargs):
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            if self.started is not None:
+                self.seconds += perf_counter() - self.started
+                self.steps += 1
+            self.started = None
+
     class StopAfter(TrainerCallback):
         def on_step_end(self, args, state, control, **kwargs):
             control.should_training_stop = state.global_step >= stop_after
 
     steps = set(schedule)
-    callbacks = [AssistantTokenCounter()] + ([StopAfter()] if stop_after else [])
+    timer = StepTimer()
+    callbacks = [AssistantTokenCounter(), timer] + ([StopAfter()] if stop_after else [])
     hub_model_id = config.get("hub_model_id")
     args = TrainingArguments(
         output_dir=config["output_dir"],
@@ -161,6 +180,7 @@ def make_trainer(model, features, config, *, pad_token_id, stop_after=None, sequ
     trainer = SFTTrainer(model=model, args=args, train_dataset=features, eval_dataset=eval_dataset,
                          data_collator=SFTCollator(pad_token_id), callbacks=callbacks)
     trainer.add_callback(Scheduled(trainer))
+    trainer.step_timer = timer
     return trainer
 
 
@@ -287,6 +307,8 @@ def run(config, *, resume=None, stop_after=None, data_repo=None):
     metrics = {
         **result.metrics, "data": data_report, "wall_seconds": perf_counter() - started,
         "global_step": trainer.state.global_step,
+        # This process only: after a resume, the steps run before the interruption are not counted.
+        "step_seconds": trainer.step_timer.seconds, "timed_steps": trainer.step_timer.steps,
         "assistant_tokens_seen": trainer.state.log_history[-1].get("assistant_tokens_seen"),
         "peak_gpu_memory_gib": torch.cuda.max_memory_allocated() / 1024 ** 3 if torch.cuda.is_available() else None,
         "log_history": trainer.state.log_history,
