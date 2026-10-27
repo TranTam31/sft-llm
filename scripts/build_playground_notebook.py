@@ -49,6 +49,8 @@ for relative, source in json.loads(payload).items():
     target.write_text(source, encoding="utf-8")
 os.chdir(root)
 sys.path.insert(0, str(root))
+# One GPU only (Kaggle gives two T4s): with two, Trainer splits each batch across them and the effective batch doubles.
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
 # Các object đã tạo (như lab) vẫn giữ nguyên; lần import tiếp dùng source mới.
 for module_name in list(sys.modules):
     if module_name == "src" or module_name.startswith("src."):
@@ -644,11 +646,24 @@ Bị ngắt ở bất kỳ đâu: kết nối lại, chạy lại cell 1–5 r�
         cell("code", bundle_code(encoded, digest)),
         cell("markdown", "## 3. Kiểm tra mã"),
         cell("code", TESTS_CODE),
-        cell("markdown", HF_LOGIN_MD + "\nĐiền `DATASET_REPO` (dataset private chứa `eval_sets/` và `train/`)."),
-        cell("code", '''from google.colab import userdata
-from huggingface_hub import whoami
+        cell("markdown", HF_LOGIN_MD + "\nChạy trên máy Kaggle (Colab nối vào Kaggle Jupyter Server) thì secret của Colab có thể không đọc được: khi đó cell này đọc secret `HF_TOKEN` trong **Add-ons → Secrets** của notebook Kaggle.\n\nĐiền `DATASET_REPO` (dataset private chứa `eval_sets/` và `train/`)."),
+        cell("code", '''from huggingface_hub import whoami
 
-os.environ["HF_TOKEN"] = userdata.get("HF_TOKEN")
+
+def hf_token():
+    """The HF_TOKEN secret of Colab, or of Kaggle when this runtime is a Kaggle Jupyter Server."""
+    try:
+        from google.colab import userdata
+
+        return userdata.get("HF_TOKEN")
+    except Exception as error:  # Colab's secret store may be unreachable from a Kaggle backend
+        print("Colab secret unavailable:", type(error).__name__, error)
+    from kaggle_secrets import UserSecretsClient
+
+    return UserSecretsClient().get_secret("HF_TOKEN")
+
+
+os.environ["HF_TOKEN"] = hf_token()
 DATASET_REPO = ""  # ví dụ "your-username/sft-capability-data"
 HF_USER = whoami()["name"]
 RESULTS_REPO = f"{HF_USER}/smollm2-360m-results"  # private: outputs quote the gated eval sets

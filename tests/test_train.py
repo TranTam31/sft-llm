@@ -337,7 +337,10 @@ class LoraTests(unittest.TestCase):
             trainer.model.eval()
             loaded = LlamaForCausalLM.from_pretrained(f"{folder}/snapshots/step-00002").eval()
             with torch.no_grad():
-                expected, merged = trainer.model(input_ids=inputs).logits, loaded(input_ids=inputs).logits
+                # The Trainer moves the model to the GPU when there is one; compare both on the CPU, since GPU and
+                # CPU kernels differ by more than the tolerance.
+                expected = trainer.model.cpu()(input_ids=inputs).logits
+                merged = loaded(input_ids=inputs).logits
             meta = json.loads(Path(f"{folder}/snapshots/step-00002/meta.json").read_text(encoding="utf-8"))
         self.assertTrue(torch.allclose(merged, expected, atol=1e-5))
         self.assertFalse(any("lora" in name for name in loaded.state_dict()))

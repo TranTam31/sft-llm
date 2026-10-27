@@ -372,6 +372,10 @@ def make_trainer(model, features, config, *, pad_token_id, stop_after=None, sequ
         report_to=[],
         push_to_hub=False,  # CheckpointPusher and snapshot_saver do the Hub uploads
     )
+    if args.n_gpu > 1:
+        # Trainer would wrap the model in DataParallel and split each batch across GPUs, doubling the effective
+        # batch the protocol fixes (PLAN 5.1-5.2). Kaggle gives two T4s: expose one with CUDA_VISIBLE_DEVICES.
+        raise RuntimeError(f"{args.n_gpu} GPUs visible; set CUDA_VISIBLE_DEVICES to a single GPU.")
     model.config.use_cache = False
     trainer = SFTTrainer(model=model, args=args, train_dataset=features, eval_dataset=eval_dataset,
                          data_collator=SFTCollator(pad_token_id), callbacks=callbacks)
