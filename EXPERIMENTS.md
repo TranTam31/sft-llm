@@ -374,3 +374,22 @@ Từ mốc này mới được chạy test. Mọi thay đổi sau đây về d�
 - Việc sinh `<tool_call>` trong bộ C chưa có metric. Nếu cần thì thêm sau bằng cách chấm lại `outputs.jsonl`; đó là phân tích phụ, không đổi metric chính.
 - Missing-info của train có 31% kiểu xLAM, của eval khoảng 55%.
 - T-unseen dễ hơn T-seen (ít tham số tùy chọn hơn). Kết luận RQ3 cần bản so khớp theo độ khó (PLAN §4.2 ý 5).
+
+## 2026-10-27 — Run chính: config, LoRA, lịch snapshot của E1
+
+**Loại hoạt động:** chuẩn bị Giai đoạn 3, sau khi khóa giao thức. Mục này bổ sung cho mục "Khóa giao thức", không sửa mục đó.
+
+**Config và code**
+- `configs/e1_seq.yaml`, `configs/e2_mix.yaml`, `configs/e3_lora_r64.yaml` và `configs/e3_lora_r8.yaml` đều kế thừa `train_base.yaml`. Seed truyền bằng `python -m src.train --config … --seed S`, và `{seed}` trong `run_name`, `output_dir`, `hub_model_id` được điền tự động (ví dụ `e2_mix_s0`).
+- LoRA (`src/train.py`, khóa `lora`): PEFT, cài đặt như PLAN §5.2. Snapshot của E3 lưu trọng số đã merge vào một bản sao (fp32), nên được chấm và đo ΔW như full fine-tune; model đang train vẫn giữ adapter. Checkpoint để resume chỉ chứa adapter và trạng thái optimizer.
+- Test: LoRA chỉ đổi trọng số adapter; snapshot đã merge cho cùng logits với model PEFT; resume LoRA trùng đường loss với run chạy liền. Chưa chạy LoRA trên GPU, nên chưa đo tốc độ và bộ nhớ.
+
+**Lịch snapshot của E1: thêm mốc ranh giới và thang thứ hai**
+- *Vấn đề (thấy khi tính lịch trên dữ liệu thật):* D_chat chiếm 4.61 triệu trong 6.53 triệu token assistant mỗi run (khoảng 70%). Với thang nhân đôi trên token cộng dồn, mốc 3.2M vẫn nằm trong giai đoạn chat, nên giai đoạn tool của E1 (step 626–1250, khoảng 1.92 triệu token) chỉ có snapshot ở step 1209 và 1250. Như vậy không đo được kỹ năng tool xuất hiện ra sao trong E1, trong khi so sánh E1 với E2 là mục đích của RQ về thứ tự dữ liệu.
+- *Thay đổi:* E1 (`stage_snapshots: true`) lưu thêm hai loại snapshot:
+  - Snapshot ở step chat cuối cùng (`boundary` trong `meta.json`), là điểm "chỉ học chat" mà PLAN §5.1 đã mô tả nhưng mục khóa chưa ghi.
+  - Thang thứ hai tính token assistant kể từ ranh giới: 25k, 50k, 100k… (nhân 2), ghi `stage_target_tokens` trong `meta.json`. Một step thuộc cả hai thang chỉ lưu một lần, mang cả hai mốc.
+- *Lịch thực tế (seed 0):* thang tích lũy ở step 4, 7, 15, 27, 54, 108, 218, 436; ranh giới ở step 625; thang từ ranh giới ở step 634, 643, 659, 691, 754, 886, 1145; rồi step 1209 (6.4M) và 1250 (cuối). Tổng 18 snapshot, so với 10 của E2. Seed khác lệch vài step.
+- *Không đổi:* thang tích lũy, θ, luật t_reach/t_improve, cách tính CI. Trục x chính vẫn là `assistant_tokens_seen`. Thang thứ hai chỉ thêm điểm đo cho giai đoạn tool.
+- *Đọc kết quả:* để so tốc độ học tool giữa E1 và E2, có thể vẽ thêm theo số token tool đã học (với E1 là token kể từ ranh giới; với E2 thì tính từ `order.json`). Đây là phân tích phụ. Khi áp luật t_reach (giữ ở 2 checkpoint kế tiếp) cho E1, dùng mọi snapshot theo thứ tự step.
+- *Chi phí:* thêm 8 snapshot mỗi run E1. Ở mức khoảng 15 phút chấm test mỗi snapshot, mỗi run tốn thêm khoảng 2 giờ GPU, 3 seed khoảng 6 giờ. Tổng ngân sách khoảng 61–66 giờ GPU.
