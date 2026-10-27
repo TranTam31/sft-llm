@@ -446,3 +446,19 @@ Một run chính có khoảng 25 lần lưu checkpoint, nên riêng phần lịc
 **Ước tính sau khi sửa:** mỗi repo run chính chỉ còn snapshot (E2 khoảng 15 GB, E1 khoảng 26 GB), thêm khoảng 8.6 GB cho hai ô checkpoint trong lúc train. Dung lượng private còn khoảng 2.4 GB cho dataset cộng vài chục MB kết quả mỗi run.
 
 **Chưa kiểm trên GPU:** đẩy và squash checkpoint thật, tốc độ upload, LoRA trên T4. Cách kiểm đề xuất: chạy cell 6 của `07_main` với E2 seed 0, xem commit squash sau checkpoint đầu (step 50).
+
+## 2026-10-27 — Giả thuyết cho E2 seed 0 (ghi trước khi chạy)
+
+**Run:** `configs/e2_mix.yaml`, seed 0, chấm test ở 10 snapshot (25k, 50k, 100k, 200k, 400k, 800k, 1.6M, 3.2M, 6.4M token assistant và step cuối). Một seed nên mọi kết luận ở đây chỉ là đọc điểm, kèm CI bootstrap trong seed. Kết luận về H1–H3 đợi đủ 3 seed.
+
+**Giả thuyết run này kiểm:** H1, H2, H3 (PLAN §1). H5 cần E3; H6 cần phân tích ΔW sau. H4 đã bị E0 bác bỏ: base few-shot có `format_valid` gần 0 trên cả dev và test.
+
+**Dự đoán** (dựa trên pilot E2 10% ở lr 2e-5 và 5e-5; "xuất hiện" là t_reach với θ chính, trên test, T-seen):
+1. **Thứ tự:** `stop_rate` và `format_valid` xuất hiện trước, ở mốc 100k hoặc 200k. Sau đó tới `grounded_correct` và `decision_bacc` (khoảng 200k). Rồi `call_exact` (400k–1.6M). `clarify_correct` xuất hiện muộn nhất, có thể không đạt 0.5 tới cuối run.
+2. **H1** (format sớm hơn `call_exact` ít nhất một checkpoint): đúng, cách nhau ít nhất 2 checkpoint.
+3. **H2, phần "`decision_bacc` muộn nhất":** sai. Ở pilot, `decision_bacc` đạt 0.80 ở khoảng 200k, trước `call_exact` và `clarify_correct`.
+4. **H2, phần "`false_call_rate` vượt base rồi giảm":** đúng. Đỉnh ở 100k–200k token (pilot: 0.67–0.70), rồi giảm xuống dưới 0.3 ở cuối run.
+5. **H3:** `call_exact` T-unseen cao hơn base few-shot (CI loại trừ 0); đúng, nhưng không đọc là tổng quát hóa vì T-unseen dễ hơn (hạn chế đã biết). Mức giảm T-rename vô nghĩa so với T-seen lớn hơn 10 điểm (pilot: 13 điểm), nên tiêu chí ≤ 10 điểm của H3 không đạt.
+6. **Quên (mô tả, cho H5 về sau):** perplexity wikitext-2 cuối run trong khoảng 13.5–14.5 (base 13.01), KL tới base 0.03–0.10, `stop_rate` C ≥ 0.85.
+
+**Kết quả coi là bất ngờ, phải kiểm hạ tầng trước khi đọc:** một metric đã đạt θ rồi rơi về gần 0; val loss tool tăng liên tục; `stop_rate` C dưới 0.5 ở cuối run; `call_exact` T-seen cuối run thấp hơn mức pilot 5e-5 ở 672k (0.55 trên dev).
