@@ -1,0 +1,12 @@
+# PLAN 5.1-5.2 E3 (LoRA): E2's data and order on a LoRA adapter, r = 64 (seeds 0, 1, 2). The lr is PLAN 5.2's LoRA
+# default, not swept. Embeddings / lm_head are neither adapted nor trained. Snapshots save the merged weights.
+base: configs/e2_mix.yaml
+run_name: e3_lora_r64_s{seed}
+learning_rate: 2.0e-4
+lora:
+  r: 64
+  alpha: 128                   # 2r
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+output_dir: results/runs/e3_lora_r64_s{seed}
+hub_model_id: null             # e.g. <username>/smollm2-360m-e3-lora-r64-s{seed}; pass --hub-model-id on Colab

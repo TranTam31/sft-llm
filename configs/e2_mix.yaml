@@ -1,0 +1,7 @@
+# PLAN 5.1 E2 (Mix): D_chat and D_tool shuffled together, 2 epochs, the same settings as E1 but the order.
+# One config for every seed: python -m src.train --config configs/e2_mix.yaml --seed S
+base: configs/train_base.yaml
+run_name: e2_mix_s{seed}
+order: mix
+output_dir: results/runs/e2_mix_s{seed}
+hub_model_id: null             # e.g. <username>/smollm2-360m-e2-mix-s{seed}; pass --hub-model-id on Colab

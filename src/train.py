@@ -1,6 +1,6 @@
 """SFT on the Hugging Face Trainer; serialization and the loss mask come from src.sft_data.
 
-Run: python -m src.train --config configs/e2_pilot.yaml [--max-steps N] [--resume last|hub|PATH]
+Run: python -m src.train --config configs/e2_mix.yaml [--seed S] [--max-steps N] [--resume last|hub|PATH]
      [--hub-model-id USER/REPO] [--data-repo USER/REPO]
 Checkpoints keep the full training state (optimizer, scheduler, GradScaler, RNG,
 data position) so a resumed run continues the same loss curve (PLAN 5.3).
@@ -9,9 +9,13 @@ With `data: train_sets` the run reads D_chat/D_tool (data/train/, or --data-repo
 E1 (`order: seq`) or E2 (`order: mix`) and saves weight-only snapshots for eval where cumulative assistant tokens
 reach a log-scale grid (PLAN 3.7), with validation loss on chat, seen-tool and unseen-tool dev conversations at the
 same points. `python -m src.eval.run_checkpoints` then scores every snapshot on dev.
+
+A config with `lora` trains a LoRA adapter on the frozen base (E3, PLAN 5.2); its snapshots are the merged weights,
+so they are scored and compared like a full fine-tune's.
 """
 
 import argparse
+import copy
 import json
 from pathlib import Path
 from time import perf_counter
@@ -19,15 +23,52 @@ from time import perf_counter
 from src.sft_data import SequenceTooLongError, configure_tokenizer, encode_sft, pad_batch
 
 
+SEEDED_KEYS = ("run_name", "output_dir", "hub_model_id")  # may contain {seed}: one config serves every seed
+
+
 def load_config(path, **overrides) -> dict:
     """A run config may name a `base` config it inherits (PLAN 5.1: E1 and E2 share one); its own keys win."""
+    config = read_config(path)
+    config.update({key: value for key, value in overrides.items() if value is not None})
+    for key in SEEDED_KEYS:
+        if isinstance(config.get(key), str):
+            config[key] = config[key].format(seed=config["seed"])
+    return config
+
+
+def read_config(path) -> dict:
     import yaml
 
     config = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     if "base" in config:
-        config = {**load_config(config.pop("base")), **config}
-    config.update({key: value for key, value in overrides.items() if value is not None})
+        config = {**read_config(config.pop("base")), **config}
     return config
+
+
+def apply_lora(model, lora: dict):
+    """Wrap the model in a LoRA adapter (PLAN 5.2): only the adapter trains; embeddings and lm_head stay frozen."""
+    from peft import LoraConfig, get_peft_model
+
+    # Gradient checkpointing needs a grad-carrying input when the embedding is frozen.
+    model.enable_input_require_grads()
+    return get_peft_model(model, LoraConfig(r=lora["r"], lora_alpha=lora["alpha"], lora_dropout=lora["dropout"],
+                                            target_modules=list(lora["target_modules"]), bias="none",
+                                            task_type="CAUSAL_LM"))
+
+
+def trainable_parameters(model) -> dict:
+    return {"trainable": sum(p.numel() for p in model.parameters() if p.requires_grad),
+            "total": sum(p.numel() for p in model.parameters())}
+
+
+def snapshot_model(model):
+    """The weights a snapshot saves: a LoRA model is merged into a copy, so eval and ΔW read a plain model; the
+    training model keeps its adapter unmerged."""
+    from peft import PeftModel
+
+    if isinstance(model, PeftModel):
+        return copy.deepcopy(model).merge_and_unload()
+    return model
 
 
 def build_features(tokenizer, examples, *, max_seq_len):
@@ -208,12 +249,16 @@ def snapshot_saver(output_dir: Path, tokenizer, config, schedule: list[dict]):
 
     def save(model, state, counter):
         folder = output_dir / "snapshots" / snapshot_name(state.global_step)
-        model.save_pretrained(folder, safe_serialization=True)
+        weights = snapshot_model(model)
+        weights.save_pretrained(folder, safe_serialization=True)
+        del weights
         tokenizer.save_pretrained(folder)
         meta = {"run": config["run_name"], "seed": config["seed"], "order": config.get("order"),
                 "step": state.global_step, "epoch": state.epoch, "tokens_seen": counter.tokens_seen,
                 "assistant_tokens_seen": counter.assistant_tokens_seen,
-                "target_tokens": targets.get(state.global_step, {}).get("target_tokens")}
+                "target_tokens": targets.get(state.global_step, {}).get("target_tokens"),
+                "boundary": targets.get(state.global_step, {}).get("boundary", False),
+                "stage_target_tokens": targets.get(state.global_step, {}).get("stage_target_tokens")}
         (folder / "meta.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
         if config.get("hub_model_id"):
             from huggingface_hub import create_repo, upload_folder
@@ -235,8 +280,8 @@ def fetch_train_sets(repo_id: str, data_dir: Path):
 def prepare_train_sets(tokenizer, config, *, data_repo=None) -> dict:
     """Features in run order, the checkpoint schedule and the validation sets (src.train_data)."""
     from src.eval.run_eval import load_items
-    from src.train_data import (build_order, checkpoint_schedule, load_jsonl, step_tokens, take_fraction,
-                                val_examples)
+    from src.train_data import (add_stage_snapshots, build_order, checkpoint_schedule, load_jsonl, step_tokens,
+                                take_fraction, val_examples)
 
     data_dir = Path(config.get("data_dir", "data/train"))
     if data_repo and not (data_dir / "d_tool.jsonl").exists():
@@ -258,6 +303,8 @@ def prepare_train_sets(tokenizer, config, *, data_repo=None) -> dict:
     if config.get("max_steps"):
         per_step = per_step[:config["max_steps"]]
     schedule = checkpoint_schedule(per_step, **config["checkpoint_tokens"])
+    if config.get("stage_snapshots"):
+        schedule = add_stage_snapshots(schedule, per_step, sequence, batch=batch, **config["checkpoint_tokens"])
     val = {}
     if config.get("val_split"):
         for name, items in val_examples(load_items(config["val_split"], probe=False)).items():
@@ -295,6 +342,8 @@ def run(config, *, resume=None, stop_after=None, data_repo=None):
     else:
         raise ValueError(f"Unknown data {config['data']!r}; use inspection or train_sets.")
     model = AutoModelForCausalLM.from_pretrained(model_id, revision=revision, dtype=torch.float32)
+    if config.get("lora"):
+        model = apply_lora(model, config["lora"])
     (output_dir / "config.json").write_text(json.dumps(
         {**config, "model_id": model_id, "model_revision": revision}, indent=2), encoding="utf-8")
 
@@ -306,7 +355,7 @@ def run(config, *, resume=None, stop_after=None, data_repo=None):
     result = trainer.train(resume_from_checkpoint=resolve_resume(resume, config))
     metrics = {
         **result.metrics, "data": data_report, "wall_seconds": perf_counter() - started,
-        "global_step": trainer.state.global_step,
+        "global_step": trainer.state.global_step, "parameters": trainable_parameters(model),
         # This process only: after a resume, the steps run before the interruption are not counted.
         "step_seconds": trainer.step_timer.seconds, "timed_steps": trainer.step_timer.steps,
         "assistant_tokens_seen": trainer.state.log_history[-1].get("assistant_tokens_seen"),
@@ -322,6 +371,8 @@ def run(config, *, resume=None, stop_after=None, data_repo=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
+    parser.add_argument("--seed", type=int, help="Overrides the config's seed; fills {seed} in run_name, output_dir "
+                        "and hub_model_id.")
     parser.add_argument("--max-steps", type=int)
     parser.add_argument("--hub-model-id")
     parser.add_argument("--output-dir")
@@ -329,7 +380,7 @@ def main():
     parser.add_argument("--resume", help="last, hub, or a checkpoint path.")
     parser.add_argument("--stop-after", type=int, help="Interrupt at this step to test resume.")
     args = parser.parse_args()
-    config = load_config(args.config, max_steps=args.max_steps, hub_model_id=args.hub_model_id,
+    config = load_config(args.config, seed=args.seed, max_steps=args.max_steps, hub_model_id=args.hub_model_id,
                          output_dir=args.output_dir)
     metrics = run(config, resume=args.resume, stop_after=args.stop_after, data_repo=args.data_repo)
     print(json.dumps({key: value for key, value in metrics.items() if key != "log_history"}, indent=2))

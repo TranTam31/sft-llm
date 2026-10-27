@@ -1,7 +1,8 @@
 from collections import Counter
 import unittest
 
-from src.train_data import build_order, checkpoint_schedule, step_tokens, take_fraction, val_examples
+from src.train_data import (add_stage_snapshots, build_order, checkpoint_schedule, step_tokens, take_fraction,
+                            val_examples)
 from src.tool_calls import format_tool_calls
 
 
@@ -49,6 +50,34 @@ class ScheduleTests(unittest.TestCase):
         schedule = checkpoint_schedule([100, 1, 1], start=10, factor=2)
         self.assertEqual([entry["step"] for entry in schedule], [1, 3])
         self.assertIsNone(schedule[-1]["target_tokens"])
+
+    def test_e1_adds_the_boundary_and_a_grid_counted_from_it(self):
+        # 8 chat steps then 8 tool steps of 10 tokens: cumulative grid 25, 50, 100 -> steps 3, 5, 10 (+ last, 16).
+        sequence = build_order(16, 16, order="seq", epochs=1, batch=2, seed=0)
+        per_step = [10] * 16
+        schedule = add_stage_snapshots(checkpoint_schedule(per_step, start=25, factor=2), per_step, sequence,
+                                       batch=2, start=25, factor=2)
+        rows = [(entry["step"], entry["target_tokens"], entry.get("boundary", False), entry.get("stage_target_tokens"))
+                for entry in schedule]
+        # From the boundary (step 8): 25 -> step 11, 50 -> step 13; step 10 sits only on the cumulative grid.
+        self.assertEqual(rows, [(3, 25, False, None), (5, 50, False, None), (8, None, True, None),
+                                (10, 100, False, None), (11, None, False, 25), (13, None, False, 50),
+                                (16, None, False, None)])
+        self.assertEqual(schedule[2]["assistant_tokens"], 80)
+
+    def test_a_step_on_both_grids_is_saved_once_with_both_targets(self):
+        sequence = build_order(4, 4, order="seq", epochs=1, batch=2, seed=0)   # boundary after step 2
+        per_step = [10] * 4
+        schedule = add_stage_snapshots(checkpoint_schedule(per_step, start=20, factor=2), per_step, sequence,
+                                       batch=2, start=20, factor=2)
+        self.assertEqual([(entry["step"], entry["target_tokens"], entry.get("boundary", False),
+                           entry.get("stage_target_tokens")) for entry in schedule],
+                         [(2, 20, True, None), (4, 40, False, 20)])
+
+    def test_a_run_cut_before_the_tool_stage_adds_nothing(self):
+        sequence = build_order(4, 4, order="seq", epochs=1, batch=2, seed=0)
+        truncated = checkpoint_schedule([10, 10], start=5, factor=2)          # max_steps 2 ends at the boundary
+        self.assertEqual(add_stage_snapshots(truncated, [10, 10], sequence, batch=2, start=5, factor=2), truncated)
 
 
 class ValTests(unittest.TestCase):

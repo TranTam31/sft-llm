@@ -1,0 +1,10 @@
+# PLAN 5.1 E1 (Seq): all of D_chat for 2 epochs, then all of D_tool for 2 epochs, one global lr schedule and one
+# optimizer across the boundary. One config for every seed: python -m src.train --config configs/e1_seq.yaml --seed S
+base: configs/train_base.yaml
+run_name: e1_seq_s{seed}
+order: seq
+# Also snapshot the last chat step (the "chat only" point, PLAN 5.1) and a second 25k x 2 grid of assistant tokens
+# counted from that boundary, so the tool stage is sampled like a run that starts there (EXPERIMENTS.md 2026-10-27).
+stage_snapshots: true
+output_dir: results/runs/e1_seq_s{seed}
+hub_model_id: null             # e.g. <username>/smollm2-360m-e1-seq-s{seed}; pass --hub-model-id on Colab

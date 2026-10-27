@@ -78,6 +78,27 @@ def checkpoint_schedule(tokens_per_step: list[int], *, start: int, factor: float
     return schedule
 
 
+def add_stage_snapshots(schedule: list[dict], tokens_per_step: list[int], sequence: list, *, batch: int, start: int,
+                        factor: float) -> list[dict]:
+    """E1 (seq) also snapshots its last chat step, the "chat only" point of PLAN 5.1 (`boundary`), and a second grid
+    counting assistant tokens from that boundary (`stage_target_tokens`): on the cumulative grid alone, D_chat's ~70%
+    of the tokens leaves the tool stage with two snapshots. A step on both grids is saved once, carrying both targets;
+    a boundary past the run's last step adds nothing."""
+    boundary = sum(source == "chat" for source, _ in sequence) // batch
+    if not 0 < boundary < len(tokens_per_step):
+        return schedule
+    cumulative = list(accumulate(tokens_per_step))
+    entries = {entry["step"]: dict(entry) for entry in schedule}
+    added = [(boundary, {"boundary": True})]
+    added += [(boundary + entry["step"], {"stage_target_tokens": entry["target_tokens"]})
+              for entry in checkpoint_schedule(tokens_per_step[boundary:], start=start, factor=factor)
+              if entry["target_tokens"] is not None]
+    for step, keys in added:
+        entry = entries.setdefault(step, {"step": step, "target_tokens": None, "assistant_tokens": cumulative[step - 1]})
+        entry.update(keys)
+    return [entries[step] for step in sorted(entries)]
+
+
 def val_examples(items: list[dict]) -> dict[str, list[dict]]:
     """Dev items that carry a reference answer, as conversations for validation loss: chat (C) and tool, split by
     seen and unseen tools. Calls are serialized as the train data serializes them; Missing-info has no reference."""
