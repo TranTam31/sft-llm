@@ -7,4 +7,5 @@ order: seq
 # counted from that boundary, so the tool stage is sampled like a run that starts there (EXPERIMENTS.md 2026-10-27).
 stage_snapshots: true
 output_dir: results/runs/e1_seq_s{seed}
+hub_private: false             # weights only; eval outputs go to a private results repo (run_checkpoints)
 hub_model_id: null             # e.g. <username>/smollm2-360m-e1-seq-s{seed}; pass --hub-model-id on Colab

@@ -1,8 +1,10 @@
 """Training-loop contracts on a tiny random Llama; no pretrained weights are downloaded."""
 
+import fnmatch
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 
@@ -122,6 +124,144 @@ class TrainLoopTests(unittest.TestCase):
         return {entry["step"]: entry for entry in trainer.state.log_history if "loss" in entry}
 
 
+class FakeHub:
+    """A Hub repo kept in a local folder: commits apply their operations to it, downloads copy from it."""
+
+    def __init__(self, remote):
+        self.remote, self.calls = Path(remote), []
+
+    def create_repo(self, repo_id, private, exist_ok):
+        self.calls.append(("create_repo", private))
+
+    def file_exists(self, repo_id, filename):
+        return (self.remote / filename).is_file()
+
+    def list_repo_files(self, repo_id):
+        return sorted(path.relative_to(self.remote).as_posix() for path in self.remote.rglob("*") if path.is_file())
+
+    def hf_hub_download(self, repo_id, filename, local_dir=None):
+        if local_dir is None:
+            return str(self.remote / filename)
+        target = Path(local_dir) / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(self.remote / filename, target)
+        return str(target)
+
+    def snapshot_download(self, repo_id, allow_patterns, local_dir):
+        for name in self.list_repo_files(repo_id):
+            if any(fnmatch.fnmatch(name, pattern) for pattern in allow_patterns):
+                self.hf_hub_download(repo_id, name, local_dir=local_dir)
+
+    def create_commit(self, repo_id, operations, commit_message):
+        from huggingface_hub import CommitOperationAdd
+
+        for operation in operations:
+            target = self.remote / operation.path_in_repo
+            if isinstance(operation, CommitOperationAdd):
+                target.parent.mkdir(parents=True, exist_ok=True)
+                source = operation.path_or_fileobj
+                if isinstance(source, bytes):
+                    target.write_bytes(source)
+                else:
+                    shutil.copyfile(source, target)
+            else:
+                target.unlink()
+        self.calls.append(("commit", commit_message))
+
+    def upload_folder(self, *, repo_id, folder_path, path_in_repo=None, allow_patterns=None, commit_message=None):
+        self.calls.append(("upload", path_in_repo))
+
+    def super_squash_history(self, repo_id, commit_message=None):
+        self.calls.append(("squash", commit_message))
+
+
+@unittest.skipUnless(HAS_RUNTIME, "Install torch, transformers and accelerate (requirements.txt).")
+class CheckpointPushTests(unittest.TestCase):
+    config = TrainLoopTests.config
+
+    def push_run(self, remote, folder, **overrides):
+        from src.train import CheckpointPusher, make_trainer
+
+        hub = FakeHub(remote)
+        pusher = CheckpointPusher("user/run", private=False, api=hub)
+        trainer = make_trainer(tiny_model(), synthetic_features(), self.config(folder, **overrides), pad_token_id=0,
+                               pusher=pusher, schedule=[1, 3], snapshot=lambda model, state, counter: None)
+        trainer.train()
+        return hub, pusher
+
+    def test_slots_take_turns_and_resume_json_names_the_newest(self):
+        with tempfile.TemporaryDirectory() as remote, tempfile.TemporaryDirectory() as folder:
+            hub, pusher = self.push_run(remote, folder, save_steps=1, save_total_limit=1)
+            resume = json.loads(Path(remote, "resume.json").read_text())
+            progress = json.loads(Path(remote, "progress.json").read_text())
+            files = hub.list_repo_files("user/run")
+            state_a = json.loads(Path(remote, "checkpoint-a", "trainer_state.json").read_text())["global_step"]
+            state_b = json.loads(Path(remote, "checkpoint-b", "trainer_state.json").read_text())["global_step"]
+        commits = [call[1] for call in hub.calls if call[0] == "commit"]
+        self.assertEqual(commits, [f"checkpoint step {step} -> checkpoint-{slot}"
+                                   for step, slot in ((1, "a"), (2, "b"), (3, "a"), (4, "b"))])
+        # Every commit is squashed before the next one.
+        self.assertEqual([call[0] for call in hub.calls[1:]], ["commit", "squash"] * 4)
+        self.assertEqual((resume, state_a, state_b), ({"slot": "b", "step": 4}, 3, 4))
+        self.assertEqual((progress["step"], progress["max_steps"], progress["last_snapshot_step"]), (4, 4, 3))
+        self.assertGreater(progress["assistant_tokens_seen"], 0)
+        self.assertNotIn("last-checkpoint", " ".join(files))
+        self.assertEqual(pusher.errors, [])
+
+    def test_resume_takes_the_newest_slot_and_falls_back_when_it_is_corrupt(self):
+        from src.train import fetch_resume_checkpoint
+
+        with tempfile.TemporaryDirectory() as remote, tempfile.TemporaryDirectory() as folder, \
+                tempfile.TemporaryDirectory() as local:
+            hub, _ = self.push_run(remote, folder, save_steps=1, save_total_limit=1)
+            newest = fetch_resume_checkpoint("user/run", Path(local) / "a", api=hub)
+            optimizer = Path(remote, "checkpoint-b", "optimizer.pt")
+            optimizer.write_bytes(optimizer.read_bytes()[:-200])          # a truncated upload
+            fallback = fetch_resume_checkpoint("user/run", Path(local) / "b", api=hub)
+            self.assertEqual((Path(newest).name, Path(fallback).name), ("checkpoint-b", "checkpoint-a"))
+            self.assertEqual(json.loads(Path(fallback, "trainer_state.json").read_text())["global_step"], 3)
+
+    def test_a_resumed_pusher_continues_the_rotation(self):
+        from src.train import CheckpointPusher
+
+        with tempfile.TemporaryDirectory() as remote, tempfile.TemporaryDirectory() as folder:
+            self.push_run(remote, folder, save_steps=2)                    # steps 2 -> a, 4 -> b
+            pusher = CheckpointPusher("user/run", api=FakeHub(remote))
+            checkpoint = Path(folder) / "checkpoint-4"
+            pusher.push(checkpoint, 6)
+            pusher.wait()
+            resume = json.loads(Path(remote, "resume.json").read_text())
+        self.assertEqual(resume, {"slot": "a", "step": 6})
+
+    def test_a_failed_push_is_recorded_and_training_goes_on(self):
+        from src.train import CheckpointPusher, make_trainer
+
+        class FailingHub(FakeHub):
+            def create_commit(self, *args, **kwargs):
+                raise ConnectionError("offline")
+
+        with tempfile.TemporaryDirectory() as remote, tempfile.TemporaryDirectory() as folder:
+            pusher = CheckpointPusher("user/run", api=FailingHub(remote))
+            trainer = make_trainer(tiny_model(), synthetic_features(), self.config(folder), pad_token_id=0,
+                                   pusher=pusher)
+            trainer.train()
+        self.assertEqual(trainer.state.global_step, 4)
+        self.assertEqual(len(pusher.errors), 2)   # save_steps 2: checkpoints at steps 2 and 4
+
+    def test_discard_keeps_snapshots_and_progress_only(self):
+        from src.train import CheckpointPusher
+
+        with tempfile.TemporaryDirectory() as remote, tempfile.TemporaryDirectory() as folder:
+            self.push_run(remote, folder, save_steps=2)
+            Path(remote, "snapshots", "step-00003").mkdir(parents=True)
+            Path(remote, "snapshots", "step-00003", "meta.json").write_text("{}")
+            hub = FakeHub(remote)
+            CheckpointPusher("user/run", api=hub).discard()
+            files = hub.list_repo_files("user/run")
+        self.assertEqual(files, ["progress.json", "snapshots/step-00003/meta.json"])
+        self.assertEqual(hub.calls[-1][0], "squash")
+
+
 class ConfigTests(unittest.TestCase):
     def test_seed_fills_the_run_names_of_a_main_run_config(self):
         from src.train import load_config
@@ -146,6 +286,8 @@ class ConfigTests(unittest.TestCase):
         self.assertNotIn("stage_snapshots", e2)
         self.assertNotIn("fraction", e2)
         self.assertNotIn("lora", e2)
+        self.assertEqual([config["hub_private"] for config in (e1, e2, r64, r8)], [False] * 4)
+        self.assertTrue(load_config("configs/e2_pilot.yaml")["hub_private"])
         for config, rank in ((r64, 64), (r8, 8)):
             self.assertEqual(config["learning_rate"], 2e-4)
             self.assertEqual((config["lora"]["r"], config["lora"]["alpha"], config["lora"]["dropout"]),

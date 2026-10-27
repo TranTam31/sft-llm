@@ -3,7 +3,10 @@
 Run: python -m src.train --config configs/e2_mix.yaml [--seed S] [--max-steps N] [--resume last|hub|PATH]
      [--hub-model-id USER/REPO] [--data-repo USER/REPO]
 Checkpoints keep the full training state (optimizer, scheduler, GradScaler, RNG,
-data position) so a resumed run continues the same loss curve (PLAN 5.3).
+data position) so a resumed run continues the same loss curve (PLAN 5.3). With a hub_model_id each one is pushed
+to the run repo (CheckpointPusher: two slots taking turns, resume.json, progress.json) and the repo history squashed,
+so superseded checkpoints stop using Hub storage; a run that finishes deletes the slots. `hub_private: false` makes a new run repo public (weights only: eval outputs, which quote
+the gated eval sets, never go there).
 
 With `data: train_sets` the run reads D_chat/D_tool (data/train/, or --data-repo), lays out the example order of
 E1 (`order: seq`) or E2 (`order: mix`) and saves weight-only snapshots for eval where cumulative assistant tokens
@@ -18,6 +21,7 @@ import argparse
 import copy
 import json
 from pathlib import Path
+import threading
 from time import perf_counter
 
 from src.sft_data import SequenceTooLongError, configure_tokenizer, encode_sft, pad_batch
@@ -71,6 +75,144 @@ def snapshot_model(model):
     return model
 
 
+SLOTS = ("a", "b")  # the run repo keeps the newest checkpoint and the one before it
+
+
+class CheckpointPusher:
+    """Pushes full checkpoints to the run repo in a background thread. Two slots, checkpoint-a/ and checkpoint-b/,
+    take turns, so the checkpoint before the newest one is still there if the newest cannot be loaded. The same
+    commit writes resume.json (the newest slot and its step) and progress.json (where training is), so neither
+    points at a checkpoint that did not finish uploading. The history is then squashed: snapshots stay (they are in
+    the tree), superseded checkpoints stop using storage. One commit at a time: call wait() before anything else
+    commits to the repo or the local checkpoint folder is rotated away. A failed push is reported and kept in
+    `errors`; training goes on and the next checkpoint tries again."""
+
+    def __init__(self, repo_id: str, *, private: bool = True, api=None):
+        if api is None:
+            from huggingface_hub import HfApi
+
+            api = HfApi()
+        self.repo_id, self.private, self.api = repo_id, private, api
+        self.thread, self.errors, self.created, self.latest = None, [], False, None
+
+    def ensure_repo(self):
+        if not self.created:
+            self.api.create_repo(self.repo_id, private=self.private, exist_ok=True)
+            if self.api.file_exists(self.repo_id, "resume.json"):  # a resumed run continues the slot rotation
+                self.latest = json.loads(Path(self.api.hf_hub_download(self.repo_id, "resume.json")).read_text())["slot"]
+            self.created = True
+
+    def push(self, folder, step: int, progress: dict | None = None):
+        self.wait()
+        self.thread = threading.Thread(target=self._push, args=(Path(folder), step, progress or {}))
+        self.thread.start()
+
+    def _push(self, folder: Path, step: int, progress: dict):
+        from datetime import datetime, timezone
+
+        from huggingface_hub import CommitOperationAdd, CommitOperationDelete
+
+        try:
+            self.ensure_repo()
+            slot = SLOTS[1] if self.latest == SLOTS[0] else SLOTS[0]
+            target = f"checkpoint-{slot}"
+            files = {f"{target}/{path.relative_to(folder).as_posix()}": path
+                     for path in sorted(folder.rglob("*")) if path.is_file()}
+            stale = [path for path in self.api.list_repo_files(self.repo_id)
+                     if path.startswith(f"{target}/") and path not in files]
+            progress = {**progress, "step": step, "slot": slot,
+                        "pushed_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+            operations = ([CommitOperationAdd(path_in_repo=name, path_or_fileobj=str(path)) for name, path in files.items()]
+                          + [CommitOperationDelete(path_in_repo=path) for path in stale]
+                          + [CommitOperationAdd(path_in_repo="resume.json",
+                                                path_or_fileobj=json.dumps({"slot": slot, "step": step}).encode()),
+                             CommitOperationAdd(path_in_repo="progress.json",
+                                                path_or_fileobj=json.dumps(progress, indent=1).encode())])
+            self.api.create_commit(self.repo_id, operations=operations, commit_message=f"checkpoint step {step} -> {target}")
+            self.latest = slot
+            self.api.super_squash_history(repo_id=self.repo_id, commit_message=f"squash after checkpoint step {step}")
+        except Exception as error:  # noqa: BLE001 - a lost push must not stop training
+            self.errors.append(f"step {step}: {error!r}")
+            print(f"[train] checkpoint push failed at step {step}: {error!r}", flush=True)
+
+    def wait(self):
+        if self.thread is not None:
+            self.thread.join()
+            self.thread = None
+
+    def discard(self):
+        """A finished run needs no resume state: delete both slots and resume.json, then squash them away.
+        progress.json stays as the record of the last checkpoint."""
+        from huggingface_hub import CommitOperationDelete
+
+        self.wait()
+        doomed = [path for path in self.api.list_repo_files(self.repo_id)
+                  if path == "resume.json" or path.startswith(tuple(f"checkpoint-{slot}/" for slot in SLOTS))]
+        if doomed:
+            self.api.create_commit(self.repo_id, operations=[CommitOperationDelete(path_in_repo=path) for path in doomed],
+                                   commit_message="run finished: drop resume state")
+        self.api.super_squash_history(repo_id=self.repo_id, commit_message="squash after the run finished")
+
+
+def checkpoint_problems(folder) -> list[str]:
+    """Why a downloaded checkpoint cannot be resumed from, if it cannot: unreadable trainer state, missing or
+    unreadable weights, or a torch file (optimizer, scheduler, RNG, scaler) whose zip archive fails its CRC check."""
+    import zipfile
+
+    from safetensors import safe_open
+
+    folder, problems = Path(folder), []
+    try:
+        json.loads((folder / "trainer_state.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        problems.append(f"trainer_state.json: {error!r}")
+    weights = sorted(folder.glob("*.safetensors"))
+    if not weights:
+        problems.append("no *.safetensors weights")
+    for path in weights:
+        try:
+            with safe_open(str(path), "pt") as stream:
+                for key in stream.keys():
+                    stream.get_tensor(key)
+        except Exception as error:  # noqa: BLE001 - any read failure means the file is unusable
+            problems.append(f"{path.name}: {error!r}")
+    for path in sorted(folder.glob("*.pt")) + sorted(folder.glob("*.pth")):
+        try:
+            with zipfile.ZipFile(path) as archive:
+                bad = archive.testzip()
+            if bad:
+                problems.append(f"{path.name}: corrupt member {bad}")
+        except (OSError, zipfile.BadZipFile) as error:
+            problems.append(f"{path.name}: {error!r}")
+    return problems
+
+
+def fetch_resume_checkpoint(repo_id: str, local_dir, *, api=None) -> str:
+    """Download the newest checkpoint slot named by resume.json; if it fails checkpoint_problems, the other slot.
+    A repo from before the slots (last-checkpoint/ only) is read as one slot."""
+    if api is None:
+        from huggingface_hub import HfApi
+
+        api = HfApi()
+    local_dir = Path(local_dir)
+    if api.file_exists(repo_id, "resume.json"):
+        newest = json.loads(Path(api.hf_hub_download(repo_id, "resume.json", local_dir=str(local_dir))).read_text())["slot"]
+        names = [f"checkpoint-{newest}"] + [f"checkpoint-{slot}" for slot in SLOTS if slot != newest]
+    else:
+        names = ["last-checkpoint"]
+    present = {path.split("/")[0] for path in api.list_repo_files(repo_id)}
+    for name in names:
+        if name not in present:
+            continue
+        api.snapshot_download(repo_id, allow_patterns=[f"{name}/*"], local_dir=str(local_dir))
+        problems = checkpoint_problems(local_dir / name)
+        if not problems:
+            print(f"[train] resuming from {repo_id}/{name}", flush=True)
+            return str(local_dir / name)
+        print(f"[train] {name} cannot be resumed from: {problems}", flush=True)
+    raise RuntimeError(f"No usable checkpoint in {repo_id} ({names}).")
+
+
 def build_features(tokenizer, examples, *, max_seq_len):
     """Encode whole examples; too-long ones are dropped and counted, never truncated (PLAN 2.5)."""
     features, dropped = [], []
@@ -100,12 +242,13 @@ def effective_batch(config) -> int:
 
 
 def make_trainer(model, features, config, *, pad_token_id, stop_after=None, sequential=False, eval_dataset=None,
-                 schedule=(), snapshot=None):
+                 schedule=(), snapshot=None, pusher=None):
     """Build the Trainer; split from run() so tests can use a tiny model and synthetic features.
 
     stop_after interrupts the run at that step (after its checkpoint) to exercise resume;
     the schedule still follows max_steps. sequential reads `features` in the given order (the run laid it out).
     At every step in `schedule`, snapshot(model, state, counter) is called and eval_dataset (a dict) is evaluated.
+    A CheckpointPusher, if given, receives every saved checkpoint.
     """
     import torch
     from torch.utils.data import SequentialSampler
@@ -175,14 +318,30 @@ def make_trainer(model, features, config, *, pad_token_id, stop_after=None, sequ
                 self.steps += 1
             self.started = None
 
+    class PushCheckpoints(TrainerCallback):
+        def on_step_end(self, args, state, control, **kwargs):
+            # The save that follows rotates the previous checkpoint away; its upload must be finished first.
+            if control.should_save:
+                pusher.wait()
+
+        def on_save(self, args, state, control, **kwargs):
+            counter = trainer.counter()
+            progress = {"max_steps": state.max_steps, "assistant_tokens_seen": counter.assistant_tokens_seen,
+                        "tokens_seen": counter.tokens_seen, "step_seconds_this_process": round(timer.seconds, 1),
+                        "last_snapshot_step": max((step for step in steps if step <= state.global_step), default=None)}
+            pusher.push(Path(args.output_dir) / f"checkpoint-{state.global_step}", state.global_step, progress)
+
+        def on_train_end(self, args, state, control, **kwargs):
+            pusher.wait()
+
     class StopAfter(TrainerCallback):
         def on_step_end(self, args, state, control, **kwargs):
             control.should_training_stop = state.global_step >= stop_after
 
     steps = set(schedule)
     timer = StepTimer()
-    callbacks = [AssistantTokenCounter(), timer] + ([StopAfter()] if stop_after else [])
-    hub_model_id = config.get("hub_model_id")
+    callbacks = ([AssistantTokenCounter(), timer] + ([StopAfter()] if stop_after else [])
+                 + ([PushCheckpoints()] if pusher is not None else []))
     args = TrainingArguments(
         output_dir=config["output_dir"],
         run_name=config["run_name"],
@@ -211,11 +370,7 @@ def make_trainer(model, features, config, *, pad_token_id, stop_after=None, sequ
         remove_unused_columns=False,
         dataloader_num_workers=0,
         report_to=[],
-        push_to_hub=bool(hub_model_id),
-        hub_model_id=hub_model_id,
-        # "checkpoint" pushes the model and a full last-checkpoint/ folder on every save.
-        hub_strategy="checkpoint",
-        hub_private_repo=True,
+        push_to_hub=False,  # CheckpointPusher and snapshot_saver do the Hub uploads
     )
     model.config.use_cache = False
     trainer = SFTTrainer(model=model, args=args, train_dataset=features, eval_dataset=eval_dataset,
@@ -226,15 +381,13 @@ def make_trainer(model, features, config, *, pad_token_id, stop_after=None, sequ
 
 
 def resolve_resume(resume, config):
-    """last: newest local checkpoint; hub: download last-checkpoint/ from hub_model_id."""
+    """last: newest local checkpoint; hub: the newest usable checkpoint slot of hub_model_id (fetch_resume_checkpoint),
+    downloaded next to output_dir (inside it, the download would be uploaded with the run's files)."""
     if resume in (None, "last"):
         return resume == "last" or None
     if resume == "hub":
-        from huggingface_hub import snapshot_download
-
-        local = snapshot_download(config["hub_model_id"], allow_patterns=["last-checkpoint/*"],
-                                  local_dir=Path(config["output_dir"]) / "hub")
-        return str(Path(local) / "last-checkpoint")
+        output_dir = Path(config["output_dir"])
+        return fetch_resume_checkpoint(config["hub_model_id"], output_dir.parent / f"{output_dir.name}-resume")
     return resume
 
 
@@ -242,7 +395,7 @@ def snapshot_name(step: int) -> str:
     return f"step-{step:05d}"
 
 
-def snapshot_saver(output_dir: Path, tokenizer, config, schedule: list[dict]):
+def snapshot_saver(output_dir: Path, tokenizer, config, schedule: list[dict], pusher=None):
     """Weight-only fp32 snapshots for eval and ΔW (PLAN 5.3; fp16 would round away a small ΔW), each with meta.json,
     uploaded to the run's Hub repo under snapshots/ when hub_model_id is set."""
     targets = {entry["step"]: entry for entry in schedule}
@@ -260,13 +413,12 @@ def snapshot_saver(output_dir: Path, tokenizer, config, schedule: list[dict]):
                 "boundary": targets.get(state.global_step, {}).get("boundary", False),
                 "stage_target_tokens": targets.get(state.global_step, {}).get("stage_target_tokens")}
         (folder / "meta.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
-        if config.get("hub_model_id"):
-            from huggingface_hub import create_repo, upload_folder
-
-            create_repo(config["hub_model_id"], private=True, exist_ok=True)
-            upload_folder(repo_id=config["hub_model_id"], folder_path=str(folder),
-                          path_in_repo=f"snapshots/{folder.name}",
-                          commit_message=f"{config['run_name']}: snapshot {folder.name}")
+        if pusher is not None:
+            pusher.wait()  # a checkpoint push and its squash finish before the next commit
+            pusher.ensure_repo()
+            pusher.api.upload_folder(repo_id=pusher.repo_id, folder_path=str(folder),
+                                     path_in_repo=f"snapshots/{folder.name}",
+                                     commit_message=f"{config['run_name']}: snapshot {folder.name}")
     return save
 
 
@@ -328,7 +480,9 @@ def run(config, *, resume=None, stop_after=None, data_repo=None):
     tokenizer = configure_tokenizer(AutoTokenizer.from_pretrained(model_id, revision=revision))
     output_dir = Path(config["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
-    extra = {}
+    pusher = (CheckpointPusher(config["hub_model_id"], private=config.get("hub_private", True))
+              if config.get("hub_model_id") else None)
+    extra = {"pusher": pusher}
     if config["data"] == "inspection":
         features, data_report = build_features(tokenizer, inspection_examples(), max_seq_len=config["max_seq_len"])
     elif config["data"] == "train_sets":
@@ -336,9 +490,9 @@ def run(config, *, resume=None, stop_after=None, data_repo=None):
         features, data_report = prepared["features"], prepared["report"]
         config = {**config, "max_steps": prepared["max_steps"]}
         (output_dir / "order.json").write_text(json.dumps(prepared["order"]), encoding="utf-8")
-        extra = {"sequential": True, "eval_dataset": prepared["val"],
-                 "schedule": [entry["step"] for entry in prepared["schedule"]],
-                 "snapshot": snapshot_saver(output_dir, tokenizer, config, prepared["schedule"])}
+        extra.update(sequential=True, eval_dataset=prepared["val"],
+                     schedule=[entry["step"] for entry in prepared["schedule"]],
+                     snapshot=snapshot_saver(output_dir, tokenizer, config, prepared["schedule"], pusher))
     else:
         raise ValueError(f"Unknown data {config['data']!r}; use inspection or train_sets.")
     model = AutoModelForCausalLM.from_pretrained(model_id, revision=revision, dtype=torch.float32)
@@ -356,6 +510,8 @@ def run(config, *, resume=None, stop_after=None, data_repo=None):
     metrics = {
         **result.metrics, "data": data_report, "wall_seconds": perf_counter() - started,
         "global_step": trainer.state.global_step, "parameters": trainable_parameters(model),
+        "completed": trainer.state.global_step >= config["max_steps"],
+        "checkpoint_push_errors": pusher.errors if pusher is not None else [],
         # This process only: after a resume, the steps run before the interruption are not counted.
         "step_seconds": trainer.step_timer.seconds, "timed_steps": trainer.step_timer.steps,
         "assistant_tokens_seen": trainer.state.log_history[-1].get("assistant_tokens_seen"),
@@ -363,8 +519,14 @@ def run(config, *, resume=None, stop_after=None, data_repo=None):
         "log_history": trainer.state.log_history,
     }
     (output_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
-    if config.get("hub_model_id"):
-        trainer.push_to_hub(commit_message=f"{config['run_name']}: step {trainer.state.global_step}")
+    if pusher is not None:
+        pusher.wait()
+        pusher.ensure_repo()
+        pusher.api.upload_folder(repo_id=pusher.repo_id, folder_path=str(output_dir),
+                                 allow_patterns=["metrics*.json", "config.json", "order.json"],
+                                 commit_message=f"{config['run_name']}: train metrics at step {trainer.state.global_step}")
+        if metrics["completed"]:
+            pusher.discard()
     return metrics
 
 

@@ -4,4 +4,5 @@ base: configs/train_base.yaml
 run_name: e2_mix_s{seed}
 order: mix
 output_dir: results/runs/e2_mix_s{seed}
+hub_private: false             # weights only; eval outputs go to a private results repo (run_checkpoints)
 hub_model_id: null             # e.g. <username>/smollm2-360m-e2-mix-s{seed}; pass --hub-model-id on Colab

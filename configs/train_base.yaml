@@ -20,7 +20,9 @@ gradient_checkpointing: true
 # (PLAN 3.7); validation loss on chat / seen-tool / unseen-tool dev conversations at the same steps.
 checkpoint_tokens: {start: 25000, factor: 2}
 val_split: dev
-# Full-state checkpoints for resume (PLAN 5.3); only the newest is kept locally, last-checkpoint/ on the Hub.
+# Full-state checkpoints for resume (PLAN 5.3); only the newest is kept locally. On the Hub the newest two take turns
+# in checkpoint-a/ and checkpoint-b/ (history squashed after each push, both deleted when the run finishes). A new run repo is private unless a run says so.
+hub_private: true
 save_steps: 50
 save_total_limit: 1
 logging_steps: 5
