@@ -462,3 +462,40 @@ Một run chính có khoảng 25 lần lưu checkpoint, nên riêng phần lịc
 6. **Quên (mô tả, cho H5 về sau):** perplexity wikitext-2 cuối run trong khoảng 13.5–14.5 (base 13.01), KL tới base 0.03–0.10, `stop_rate` C ≥ 0.85.
 
 **Kết quả coi là bất ngờ, phải kiểm hạ tầng trước khi đọc:** một metric đã đạt θ rồi rơi về gần 0; val loss tool tăng liên tục; `stop_rate` C dưới 0.5 ở cuối run; `call_exact` T-seen cuối run thấp hơn mức pilot 5e-5 ở 672k (0.55 trên dev).
+
+## 2026-10-27 — Kết quả E2 seed 0 (test)
+
+**Chạy:** `configs/e2_mix.yaml`, seed 0, notebook `07_main`. Step 1–50 chạy trên Colab T4 (bundle `75bdbd01…`, commit `88232e5`); vì hạn mức GPU Colab không đủ một run, run được chuyển sang Kaggle (Colab nối vào Kaggle Jupyter Server, T4, chỉ dùng một GPU; bundle `573a986e…`) và resume từ checkpoint step 50 trên Hub. Phiên Kaggle bị tắt một lần lúc đang chấm snapshot cuối (hộp "Are you still there?" hiện khi mở lại tab Kaggle); bật phiên mới và chạy lại cell 6, nó bỏ qua train và 9 snapshot đã chấm.
+- Train: 1250 step, 6 527 256 token assistant (khớp số tính trước), khoảng 9.2 giây/step trên T4 Kaggle, GPU đỉnh 11.1 GiB. Không lần đẩy checkpoint nào lỗi; hai ô checkpoint đã được xóa khi run xong.
+- Chấm test: khoảng 15–17 phút mỗi snapshot (2010 prompt).
+- Trọng số: `trantam31/smollm2-360m-e2-mix-s0` (public). Output và metric: `trantam31/smollm2-360m-results`, thư mục `e2_mix_s0/` (private). CI: `python -m src.eval.stats --split test --baseline e0_test/base-zero-shot` → `results/{all,diff_base,emergence}_test.csv`.
+
+**Snapshot cuối (step 1250), test, CI bootstrap 95% theo cụm:**
+
+| | T-seen | T-unseen |
+|---|---|---|
+| `format_valid` | 1.00 | |
+| `call_exact` | 0.66 [0.61, 0.72] | 0.80 [0.74, 0.86] |
+| `call_exact` T-rename vô nghĩa / đồng nghĩa | 0.57 [0.51, 0.63] / 0.64 [0.58, 0.69] | |
+| `decision_bacc` | 0.995 [0.98, 1.00] | |
+| `false_call_rate` | 0.01 [0.00, 0.03] | |
+| `clarify_correct` | 0.62 [0.49, 0.73] | 0.61 [0.40, 0.84] |
+| `grounded_correct` | 0.97 [0.94, 1.00] | |
+| `stop_rate` C | 0.93 [0.89, 0.97] | |
+
+Base zero-shot và few-shot đều bằng 0 ở mọi metric trên (trừ `decision_bacc` = 0.5). Perplexity wikitext-2 14.12 (base 13.01), KL tới base 0.068 nat/token.
+
+**t_reach (θ chính, T-seen; token assistant):** `decision_bacc` 104k → `stop_rate`, `format_valid`, `tool_name_acc`, `grounded_correct` 200k → `call_exact` 402k → `clarify_correct` 3.2M. T-unseen giống vậy, trừ `call_exact` đạt từ 200k và `decision_bacc` từ 200k. t_improve đạt ở cùng mốc hoặc sớm hơn (`clarify_correct` 402k).
+
+**`false_call_rate` T-seen theo checkpoint:** 0, 0, 0.38 [0.29, 0.47] (104k), 0.30, 0.27, 0.17, 0.02, 0.04, 0.01, 0.01.
+
+**Đối chiếu với dự đoán ghi trước khi chạy** (một seed, chưa phải kết luận về H1–H3):
+1. Thứ tự: đúng phần lớn. Stop/format và grounded ở 200k, `call_exact` ở 400k, `clarify_correct` muộn nhất. Khác dự đoán: `decision_bacc` đến sớm nhất (104k), không phải cùng lúc grounded; `clarify_correct` có đạt 0.5 (ở 3.2M).
+2. H1 (format trước `call_exact` ít nhất một checkpoint): đạt với θ chính trên T-seen nhưng chỉ cách một checkpoint, không phải hai như dự đoán. Không vững theo PLAN §3.5: ở θ = 0.3, `call_exact` cũng đạt ở 200k; trên T-unseen, `call_exact` đạt 0.5 cùng mốc với format.
+3. H2 phần "`decision_bacc` muộn nhất": sai, như dự đoán (nó đến sớm nhất).
+4. H2 phần "`false_call_rate` vượt base rồi giảm": đúng, như dự đoán. Đỉnh 0.38 ở 104k (CI loại trừ 0, base là 0), xuống 0.01 cuối run. Đỉnh thấp hơn pilot (0.67–0.70).
+5. H3: `call_exact` T-unseen cao hơn base few-shot, CI loại trừ 0 (như dự đoán; vẫn không đọc là tổng quát hóa vì T-unseen dễ hơn). Mức giảm T-rename vô nghĩa so với T-seen khoảng 9 điểm (0.66 → 0.57, so điểm chưa ghép cặp); dự đoán là trên 10 điểm. Cần tính hiệu số ghép cặp trên đúng các prompt gốc kèm CI trước khi đọc tiêu chí ≤ 10 điểm và cận trên < 20 điểm.
+6. Quên: perplexity 14.12, KL 0.068, `stop_rate` C 0.93, đều trong khoảng dự đoán.
+- Không có dấu hiệu "bất ngờ" nào đã ghi (không metric nào rơi về 0 sau khi đạt; `call_exact` cuối 0.66 cao hơn mức pilot 0.55 trên dev).
+
+**Việc còn lại cho run này:** hiệu số ghép cặp T-rename − T-seen kèm CI (H3); đọc output bộ P theo checkpoint (PLAN Giai đoạn 3).
