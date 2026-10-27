@@ -35,6 +35,18 @@ Link notebook: hai tài khoản Google, mỗi tài khoản ở một profile Chr
 - `serve` tự chạy lại chính nó bằng Python của Codex với `--venv ~/.codex/...` (tiến trình con, `ParentProcessId` là `serve` của mình): dòng lệnh đó **không** có nghĩa Codex đang chạy bridge. Codex cũng có thể tự chạy `colab_mcp_bridge.py serve`, dùng chung `results/colab_mcp/`; hai bridge cùng lúc thì giành request của nhau (lệnh treo, trang mất kết nối). Trước khi `serve`, liệt kê tiến trình `colab_mcp_bridge.py`: bản nào không phải con của `serve` mình vừa chạy mới là của Codex, khi đó hỏi người dùng. Khi tắt bridge, chỉ kill tiến trình của mình, không kill theo tên script.
 - Giữ bridge, tab Chrome và runtime suốt giữa các bước, kể cả khi xong một bước; nối lại tốn thời gian của người dùng. Chỉ dọn khi bàn giao hoặc người dùng bảo.
 
+## Chạy trên GPU Kaggle qua giao diện Colab
+
+Run chính chạy trên Kaggle (T4, hạn mức 30 giờ GPU/tuần) thay vì GPU Colab miễn phí (vài giờ, không đủ một run). Colab chỉ là giao diện; bridge MCP vẫn chạy từng cell như trên.
+1. Notebook Kaggle bất kỳ (đã có sẵn trên tài khoản): Settings → Accelerator → GPU T4 x2 (kiểm lại bằng `find`: lần chọn đầu có thể không ăn), bật phiên bằng nút nguồn.
+2. Run → Kaggle Jupyter Server → nút copy cạnh "Colab Compatible URL" (URL chứa token phiên: dán bằng Ctrl+V, đừng đọc hay ghi nó ra).
+3. Tab Colab của notebook repo (đã mở kèm `#mcpProxyToken=…` và bấm Connect MCP): Connect ▾ → Connect to a local runtime → dán → Connect. Cảnh báo "Disk is almost full" là của máy chủ dùng chung: bỏ qua.
+4. Chạy cell như với Colab thường. Cell đăng nhập phải chạy trên giao diện (Ctrl+Enter) và bấm Continue ở hộp "Secrets Access"; qua MCP thì secret Colab hết giờ.
+- Máy có 2 GPU: notebook đặt `CUDA_VISIBLE_DEVICES=0`, `train.py` từ chối chạy khi thấy hơn một GPU (DataParallel nhân đôi batch).
+- Đổi accelerator hay bật lại phiên Kaggle thì URL đổi: lấy URL mới và kết nối lại.
+- Xong việc thì tắt phiên Kaggle (nút nguồn), không thì vẫn trừ hạn mức.
+- Phiên Kaggle tương tác giới hạn 12 giờ. Hộp "Are you still there?" (không sửa gì trong trình soạn Kaggle quá 40 phút; chạy cell qua Colab không tính) có vẻ do tab Kaggle kích hoạt: run sống hơn 6 giờ khi tab nằm nền, rồi chết đúng lúc mở lại tab. Sửa định kỳ cũng không chắc tránh được (thảo luận Kaggle "How Do You Train beyond 40 Minutes?"). Vì vậy trong lúc run: đừng mở lại tab Kaggle; đóng hẳn nó sau khi nối Colab (chưa kiểm, kiểm ở run tới). Cách Kaggle khuyên cho việc chạy lâu là Save Version → Save & Run All (đóng tab vẫn chạy, nhưng không có bridge, phải dùng secret Kaggle). Phiên đã tắt thì bật lại, lấy URL mới, kết nối lại, chạy lại cell 1–5 rồi cell 6: nó tự resume hoặc bỏ qua phần đã xong.
+
 ## Dọn trước khi bàn giao
 
 - Chỉ khi bàn giao hoặc người dùng bảo: dừng cell đang chạy trên Colab, tắt bridge (`call quit`, hoặc kill tiến trình `colab_mcp_bridge.py`), đóng tab Chrome đã mở.
