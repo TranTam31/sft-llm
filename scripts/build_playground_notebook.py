@@ -59,14 +59,20 @@ print("Working directory:", root)
 
 
 def install_code(pins):
-    """pip can leave Colab's preinstalled versions in place without failing; check after installing."""
+    """pip can leave Colab's preinstalled versions in place without failing; check after installing. Colab's torchao
+    (0.10) makes peft refuse to build any LoRA adapter, and the project does not use it, so it is removed."""
     wanted = ", ".join(f'"{name}": "{version}"' for name, version in pins)
-    return f'''%pip install -q {" ".join(f"{name}=={version}" for name, version in pins)}
-from importlib.metadata import version
+    return f'''%pip uninstall -q -y torchao
+%pip install -q {" ".join(f"{name}=={version}" for name, version in pins)}
+from importlib.metadata import PackageNotFoundError, version
 wanted = {{{wanted}}}
 installed = {{name: version(name) for name in wanted}}
 print(installed)
 assert installed == wanted, "Phiên bản chưa khớp requirements.txt; chạy lại cell này."
+try:
+    raise AssertionError(f"torchao {{version('torchao')}} vẫn còn; chạy lại cell này.")
+except PackageNotFoundError:
+    pass
 '''
 
 
@@ -328,11 +334,11 @@ train("--output-dir", "results/runs/smoke-straight")
 straight = losses("results/runs/smoke-straight")
 print(straight)
 '''),
-        cell("markdown", "## 6. Chạy lại, dừng sau step 2 và đẩy checkpoint lên Hub\nCheckpoint ở step 2 được đẩy lên `last-checkpoint/` của repo Hub."),
+        cell("markdown", "## 6. Chạy lại, dừng sau step 2 và đẩy checkpoint lên Hub\nCheckpoint ở step 2 được đẩy lên ô `checkpoint-a/` của repo Hub (`resume.json` trỏ tới ô mới nhất)."),
         cell("code", '''train("--output-dir", "results/runs/smoke-split", "--hub-model-id", HUB_MODEL_ID, "--stop-after", "2")
 print(losses("results/runs/smoke-split"))
 '''),
-        cell("markdown", "## 7. Resume từ Hub và so sánh\nTải `last-checkpoint/` từ Hub, train tiếp tới step 5. Loss ở step 3–5 phải gần bằng lần chạy liền (fp16 trên GPU có thể lệch ở chữ số cuối)."),
+        cell("markdown", "## 7. Resume từ Hub và so sánh\nTải checkpoint mới nhất (theo `resume.json`) từ Hub, train tiếp tới step 5. Loss ở step 3–5 phải gần bằng lần chạy liền (fp16 trên GPU có thể lệch ở chữ số cuối)."),
         cell("code", '''train("--output-dir", "results/runs/smoke-split", "--hub-model-id", HUB_MODEL_ID, "--resume", "hub")
 resumed = losses("results/runs/smoke-split")
 for step in sorted(straight):
@@ -533,6 +539,7 @@ from huggingface_hub import whoami
 os.environ["HF_TOKEN"] = userdata.get("HF_TOKEN")
 DATASET_REPO = ""  # ví dụ "your-username/sft-capability-data"
 HF_USER = whoami()["name"]
+RESULTS_REPO = f"{HF_USER}/smollm2-360m-results"  # private: outputs quote the gated eval sets
 print("Logged in as:", HF_USER)
 assert DATASET_REPO, "Điền DATASET_REPO trước khi chạy tiếp."
 
@@ -551,7 +558,7 @@ for name in ("d_chat", "d_tool"):
     print(name, hashlib.sha256(Path(f"data/train/{name}.jsonl").read_bytes()).hexdigest())
 '''),
         cell("markdown", """## 6. Train
-Chọn run bằng `RUN`; config là `configs/<RUN>.yaml`. Bị ngắt giữa chừng thì chạy lại cell này với `RESUME = "hub"`: train tiếp từ `last-checkpoint/` trên Hub, snapshot đã đẩy lên vẫn còn. Kiểm resume (PLAN 5.3): chạy với `STOP_AFTER = 50` (step có checkpoint), rồi chạy lại với `STOP_AFTER = 0, RESUME = "hub"`. `step_seconds` chỉ tính thời gian trong các step train của lần chạy này, không gồm snapshot, val loss và đẩy Hub (PLAN 6).
+Chọn run bằng `RUN`; config là `configs/<RUN>.yaml`. Bị ngắt giữa chừng thì chạy lại cell này với `RESUME = "hub"`: train tiếp từ checkpoint mới nhất trên Hub, snapshot đã đẩy lên vẫn còn. Kiểm resume (PLAN 5.3): chạy với `STOP_AFTER = 50` (step có checkpoint), rồi chạy lại với `STOP_AFTER = 0, RESUME = "hub"`. `step_seconds` chỉ tính thời gian trong các step train của lần chạy này, không gồm snapshot, val loss và đẩy Hub (PLAN 6).
 """),
         cell("code", '''import json
 RUN, RESUME, STOP_AFTER = "e2_pilot", "", 0
@@ -593,28 +600,114 @@ for folder in sorted(Path(f"results/{RUN}").glob("step-*")):
         cell("code", '''final = sorted(Path(f"results/runs/{RUN}/snapshots").glob("step-*"))[-1]
 !python -m src.eval.knowledge --model {final} --device cuda --output results/{RUN}/knowledge-{final.name}.json
 '''),
-        cell("markdown", "## 10. Đẩy kết quả lên Hub\nOutput, metric và log của run lên `results/` của repo model, để tải về máy bằng `huggingface_hub` thay vì in qua notebook."),
-        cell("code", '''from huggingface_hub import upload_folder
-upload_folder(repo_id=HUB_MODEL_ID, folder_path=f"results/{RUN}", path_in_repo=f"results/{RUN}",
-              commit_message=f"{RUN}: dev results")
-upload_folder(repo_id=HUB_MODEL_ID, folder_path=f"results/runs/{RUN}", path_in_repo=f"results/runs/{RUN}",
-              allow_patterns=["metrics.json", "config.json", "order.json"], commit_message=f"{RUN}: train metrics")
+        cell("markdown", "## 10. Đẩy kết quả lên Hub\nOutput và metric của run lên thư mục `<RUN>/` của repo private `RESULTS_REPO` (output chứa nguyên văn bộ dev), để tải về máy bằng `huggingface_hub` thay vì in qua notebook. Metric train đã nằm trong repo model."),
+        cell("code", '''from huggingface_hub import create_repo, upload_folder
+create_repo(RESULTS_REPO, private=True, exist_ok=True)
+upload_folder(repo_id=RESULTS_REPO, folder_path=f"results/{RUN}", path_in_repo=RUN, commit_message=f"{RUN}: dev results")
 '''),
         cell("markdown", """## 11. Chạy lại riêng bộ C với giới hạn token mới
-Bộ C nay sinh tới 512 token (PLAN 3.6). Cell này tải kết quả E0 và pilot đã có từ `results/` của repo pilot, sinh lại riêng bộ C (`--sets c`) rồi gộp vào kết quả cũ; các bộ khác được chấm lại theo luật hiện tại. Sau đó đẩy kết quả lên lại. Snapshot pilot được tải về từng cái một và xóa ngay sau khi chấm."""),
+Bộ C nay sinh tới 512 token (PLAN 3.6). Cell này tải kết quả E0 và pilot đã có từ `RESULTS_REPO` (chuyển từ `results/` của repo pilot sang ngày 2026-10-27), sinh lại riêng bộ C (`--sets c`) rồi gộp vào kết quả cũ; các bộ khác được chấm lại theo luật hiện tại. Sau đó đẩy kết quả lên lại. Snapshot pilot được tải về từng cái một và xóa ngay sau khi chấm."""),
         cell("code", '''from huggingface_hub import snapshot_download, upload_folder
 PILOT = "e2_pilot"
-snapshot_download(hub_repo(PILOT), allow_patterns=["results/e0/*", f"results/{PILOT}/*"], local_dir=".")
+PILOT_REPO = f"smollm2-360m-{PILOT.replace('_', '-')}"
+snapshot_download(RESULTS_REPO, allow_patterns=[f"{PILOT_REPO}/e0/*", f"{PILOT_REPO}/{PILOT}/*"], local_dir=".")
+for run in ("e0", PILOT):
+    Path(f"results/{run}").parent.mkdir(exist_ok=True)
+    Path(PILOT_REPO, run).rename(f"results/{run}")
 for name, model, options in [("base-zero-shot", "base", ""), ("base-few-shot", "base", "--few-shot"),
                              ("instruct-360m", "chat_reference", "--template native")]:
     !python -m src.eval.run_eval --model {model} --run e0 --checkpoint {name} --split dev --sets c {options}
 !python -m src.eval.run_checkpoints --run {PILOT} --hub-model-id {hub_repo(PILOT)} --split dev --sets c --cleanup
 for run in ("e0", PILOT):
-    upload_folder(repo_id=hub_repo(PILOT), folder_path=f"results/{run}", path_in_repo=f"results/{run}",
+    upload_folder(repo_id=RESULTS_REPO, folder_path=f"results/{run}", path_in_repo=f"{PILOT_REPO}/{run}",
                   commit_message=f"{run}: C regenerated with 512 new tokens")
 '''),
     ]
     write_notebook("06_pilot.ipynb", cells, digest)
+
+
+def build_main():
+    encoded, digest = source_bundle()
+    cells = [
+        cell("markdown", """# Run chính — train, chấm test ở mọi snapshot, đẩy kết quả
+Một run của Giai đoạn 3 (PLAN §5.1, EXPERIMENTS.md "Khóa giao thức"): `CONFIG` là `e1_seq`, `e2_mix`, `e3_lora_r64` hoặc `e3_lora_r8`, `SEED` là 0, 1 hoặc 2. Cell 6 làm hết một mạch: train (hoặc resume), chấm **test** ở mọi snapshot, perplexity và KL của snapshot cuối, rồi đẩy kết quả. Dùng runtime **T4 GPU**; một run full fine-tune khoảng 6 giờ GPU, nên phải chạy qua nhiều lần.
+
+Trên Hub:
+- Repo model `<username>/smollm2-360m-<run>` (public với run chính): snapshot, hai ô `checkpoint-a/`, `checkpoint-b/` để resume (luân phiên: còn checkpoint trước đó nếu bản mới nhất hỏng; lịch sử được squash sau mỗi lần đẩy, xóa khi run xong), metric train.
+- Repo private `<username>/smollm2-360m-results`, thư mục `<run>/`: output và metric eval, đẩy từng snapshot ngay khi chấm xong. Output chứa nguyên văn bộ test (rút từ dữ liệu gated) nên không bao giờ để public.
+
+Bị ngắt ở bất kỳ đâu: kết nối lại, chạy lại cell 1–5 rồi cell 6. Cell 6 tự resume từ checkpoint mới nhất dùng được nếu train chưa xong, bỏ qua train nếu đã xong, và bỏ qua snapshot đã có kết quả trong repo kết quả.
+"""),
+        cell("markdown", "## 1. Cài thư viện"),
+        cell("code", install_code(INFERENCE_PINS + TRAINING_PINS)),
+        cell("markdown", "## 2. Nạp mã nguồn của dự án"),
+        cell("code", bundle_code(encoded, digest)),
+        cell("markdown", "## 3. Kiểm tra mã"),
+        cell("code", TESTS_CODE),
+        cell("markdown", HF_LOGIN_MD + "\nĐiền `DATASET_REPO` (dataset private chứa `eval_sets/` và `train/`)."),
+        cell("code", '''from google.colab import userdata
+from huggingface_hub import whoami
+
+os.environ["HF_TOKEN"] = userdata.get("HF_TOKEN")
+DATASET_REPO = ""  # ví dụ "your-username/sft-capability-data"
+HF_USER = whoami()["name"]
+RESULTS_REPO = f"{HF_USER}/smollm2-360m-results"  # private: outputs quote the gated eval sets
+print("Logged in as:", HF_USER)
+assert DATASET_REPO, "Điền DATASET_REPO trước khi chạy tiếp."
+'''),
+        cell("markdown", "## 5. Tải dev/test, D_chat/D_tool và kiểm hash\nDừng nếu `src.eval.manifest` báo file thiếu hoặc khác; hash của D_chat/D_tool phải khớp `data/TRAIN.md`."),
+        cell("code", '''import hashlib
+from src.eval.run_eval import fetch
+from src.train import fetch_train_sets
+fetch(DATASET_REPO)
+fetch_train_sets(DATASET_REPO, Path("data/train"))
+!python -m src.eval.manifest
+for name in ("d_chat", "d_tool"):
+    print(name, hashlib.sha256(Path(f"data/train/{name}.jsonl").read_bytes()).hexdigest())
+'''),
+        cell("markdown", """## 6. Train, chấm test, đẩy kết quả
+Chọn `CONFIG` và `SEED`. Ghi giả thuyết của run vào EXPERIMENTS.md **trước** lần chạy đầu (PLAN Giai đoạn 3). Theo dõi thay vì chờ cell trả lời: lúc train, đọc `progress.json` của repo model (step, token, snapshot gần nhất, giờ đẩy; cập nhật mỗi checkpoint); lúc chấm, mỗi snapshot xong là một commit trên repo kết quả; commit cuối của cell là `<run>: knowledge`."""),
+        cell("code", '''import json
+from huggingface_hub import HfApi, hf_hub_download, upload_file
+from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError
+from src.train import load_config
+
+CONFIG, SEED = "e2_mix", 0
+RUN = load_config(f"configs/{CONFIG}.yaml", seed=SEED)["run_name"]
+HUB_MODEL_ID = f"{HF_USER}/smollm2-360m-{RUN.replace('_', '-')}"
+api = HfApi()
+
+
+def train_state():
+    """done, resume or new, from what the run repo holds."""
+    try:
+        files = set(api.list_repo_files(HUB_MODEL_ID))
+    except RepositoryNotFoundError:
+        return "new"
+    if "metrics.json" in files and json.loads(Path(hf_hub_download(HUB_MODEL_ID, "metrics.json")).read_text())["completed"]:
+        return "done"
+    return "resume" if "resume.json" in files else "new"
+
+
+state = train_state()
+print(RUN, HUB_MODEL_ID, "train:", state)
+if state != "done":
+    resume = "--resume hub" if state == "resume" else ""
+    !python -m src.train --config configs/{CONFIG}.yaml --seed {SEED} --hub-model-id {HUB_MODEL_ID} --data-repo {DATASET_REPO} {resume}
+    assert train_state() == "done", "Train chưa xong (xem log ở trên); chạy lại cell này để resume."
+!python -m src.eval.run_checkpoints --run {RUN} --hub-model-id {HUB_MODEL_ID} --split test --results-repo {RESULTS_REPO} --cleanup
+snapshots = sorted(path for path in api.list_repo_files(HUB_MODEL_ID) if path.startswith("snapshots/") and path.endswith("/meta.json"))
+final = snapshots[-1].split("/")[1]
+local = Path(f"results/runs/{RUN}/snapshots/{final}")
+if not local.exists():
+    api.snapshot_download(HUB_MODEL_ID, allow_patterns=[f"snapshots/{final}/*"], local_dir=f"results/runs/{RUN}")
+!python -m src.eval.knowledge --model {local} --device cuda --output results/{RUN}/knowledge-{final}.json
+upload_file(path_or_fileobj=f"results/{RUN}/knowledge-{final}.json", path_in_repo=f"{RUN}/knowledge-{final}.json",
+            repo_id=RESULTS_REPO, commit_message=f"{RUN}: knowledge")
+print("done", RUN)
+'''),
+    ]
+    write_notebook("07_main.ipynb", cells, digest)
 
 
 if __name__ == "__main__":
@@ -625,3 +718,4 @@ if __name__ == "__main__":
     build_bfcl()
     build_checkpoint_eval()
     build_pilot()
+    build_main()
