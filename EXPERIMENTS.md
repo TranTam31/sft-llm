@@ -393,3 +393,56 @@ Từ mốc này mới được chạy test. Mọi thay đổi sau đây về d�
 - *Không đổi:* thang tích lũy, θ, luật t_reach/t_improve, cách tính CI. Trục x chính vẫn là `assistant_tokens_seen`. Thang thứ hai chỉ thêm điểm đo cho giai đoạn tool.
 - *Đọc kết quả:* để so tốc độ học tool giữa E1 và E2, có thể vẽ thêm theo số token tool đã học (với E1 là token kể từ ranh giới; với E2 thì tính từ `order.json`). Đây là phân tích phụ. Khi áp luật t_reach (giữ ở 2 checkpoint kế tiếp) cho E1, dùng mọi snapshot theo thứ tự step.
 - *Chi phí:* thêm 8 snapshot mỗi run E1. Ở mức khoảng 15 phút chấm test mỗi snapshot, mỗi run tốn thêm khoảng 2 giờ GPU, 3 seed khoảng 6 giờ. Tổng ngân sách khoảng 61–66 giờ GPU.
+
+## 2026-10-27 — E0 trên test
+
+**Loại hoạt động:** Giai đoạn 3, chạy sau mục "Khóa giao thức". Mốc so sánh cho t_improve.
+
+**Thiết lập:** notebook `05_eval` tải lên mới từ repo, source bundle `acdaa2c3…` (commit `c7a7dea`), Colab T4. Trước khi chạy, `src.eval.manifest` báo 11 file khớp. `src/eval/run_eval.py --split test`: T-seen và T-unseen mỗi bộ 600 mẫu, hai mức T-rename mỗi mức 300, C 150, cùng bộ P (chỉ sinh). Tổng 2010 prompt. Greedy, batch 32, fp16; `max_new_tokens` 256, riêng C là 512. Base `f8027fd` chấm zero-shot và few-shot (template dự án); 360M-Instruct `a10cc15` dùng template riêng của nó. Perplexity và KL trên wikitext-2 không phụ thuộc split, nên dùng lại số ở mục "E0 trên dev". Output và metric ở `results/e0_test/` (git-ignore) và repo Hub private `trantam31/smollm2-360m-e0`.
+
+**Kết quả (test, chưa có CI):**
+
+| | stop_rate T-seen / T-unseen / C | call_exact | decision_bacc T-seen / T-unseen | clarify_correct T-seen / T-unseen | grounded_correct T-seen / T-unseen |
+|---|---|---|---|---|---|
+| base zero-shot | 0 / 0 / 0 | 0 | 0.50 / 0.50 | 0 / 0 | 0 / 0 |
+| base few-shot | 0 / 0 / 0 | 0 | 0.50 / 0.49 | 0 / 0 | 0 / 0 |
+| 360M-Instruct | 0.70 / 0.79 / 0.93 | 0 | 0.50 / 0.50 | 0.06 / 0.02 | 0.17 / 0.08 |
+
+- Giống dev: không model nào gọi tool đúng (`call_exact` = 0 ở mọi bộ, kể cả T-rename). Base gần như không bao giờ dừng: `truncated_rate` 0.97–1.0 ở mọi bộ.
+- 360M-Instruct dừng ở 0.54–0.55 mẫu T-rename. Nó bị cắt ở 0.07 mẫu C khi sinh 512 token.
+- Base zero-shot đạt 0 ở mọi metric kỹ năng, nên với t_improve (hiệu số ≥ 0.2) mức sàn chính là ngưỡng tuyệt đối. Đây đúng là điều đã biết ở dev.
+- **Thời gian sinh** (2010 prompt): base zero-shot 948 giây, 360M-Instruct 949 giây, base few-shot 1902 giây. Một checkpoint không bao giờ dừng tốn khoảng 16 phút chấm test, khớp ước tính 15 phút trong mục khóa giao thức.
+
+## 2026-10-27 — Lưu trữ trên Hub cho run chính
+
+**Loại hoạt động:** sửa hạ tầng, không đổi metric hay thiết lập train.
+
+**Vấn đề:** dung lượng private trên Hub là 93.5/100 GB. Mỗi repo pilot tốn 20 GB vì ba lý do:
+- Thư mục `hub/` (checkpoint tải về khi resume, 4.3 GB) bị đẩy lên cùng `output_dir`.
+- Mỗi lần đẩy `last-checkpoint/` (4.3 GB) để lại một bản trong lịch sử repo.
+- Bản thân snapshot.
+
+Một run chính có khoảng 25 lần lưu checkpoint, nên riêng phần lịch sử đã khoảng 100 GB. Cả 10 run có 124 snapshot fp32, khoảng 180 GB.
+
+**Quyết định (người dùng chọn):**
+- Repo model của run chính để public: snapshot, checkpoint, metric train.
+- Output eval và dataset giữ private, vì `outputs.jsonl` chứa nguyên văn dev/test rút từ dữ liệu gated. Kết quả nằm ở repo private `trantam31/smollm2-360m-results`, mỗi run một thư mục.
+- Snapshot giữ fp32 như PLAN §3.7.
+
+**Đã làm:**
+- 4 repo pilot: chuyển `results/` sang repo kết quả private (đối chiếu đủ file), xóa khỏi repo pilot, squash lịch sử, rồi đặt public. Repo smoke cũng public.
+- `src/train.py`:
+  - Tự đẩy checkpoint qua `CheckpointPusher`: luồng nền, mỗi lần đẩy xong thì squash lịch sử, đợi đẩy xong trước khi checkpoint cũ bị xoay vòng và trước mỗi commit snapshot.
+  - Hai ô `checkpoint-a/` và `checkpoint-b/` luân phiên, nên lúc nào cũng còn checkpoint ngay trước bản mới nhất. Cùng commit với checkpoint là `resume.json` (ô mới nhất, step) và `progress.json` (step, token, snapshot gần nhất, giờ đẩy): squash làm mất tên các commit cũ, nên theo dõi train bằng file này.
+  - Resume từ Hub (`fetch_resume_checkpoint`) nạp ô mới nhất; nếu ô đó hỏng (trainer state không đọc được, safetensors không đọc được, file torch sai CRC) thì lùi sang ô kia. Repo cũ chỉ có `last-checkpoint/` vẫn resume được.
+  - Run xong thì xóa cả hai ô và `resume.json`; giữ `progress.json`.
+  - Checkpoint resume tải ra ngoài `output_dir`.
+  - Cuối run chỉ đẩy `metrics*.json`, `config.json`, `order.json`, thay cho `trainer.push_to_hub`; `metrics.json` có thêm `completed`.
+  - Khóa config `hub_private`: mặc định true; E1/E2/E3 đặt false.
+- `run_checkpoints --results-repo`: tải `<run>/` từ repo kết quả trước, nên runtime mới cũng bỏ qua snapshot đã chấm; đẩy kết quả từng snapshot ngay sau khi chấm.
+- Notebook `07_main`: một cell làm cả train (tự resume hoặc bỏ qua nếu đã xong), chấm test mọi snapshot, perplexity và KL của snapshot cuối, rồi đẩy kết quả. Notebook `06_pilot` cũng đẩy kết quả vào repo private.
+- Cell cài thư viện của mọi notebook gỡ `torchao`: Colab cài sẵn bản 0.10, khiến `peft` từ chối tạo adapter LoRA (3 test LoRA hỏng khi chạy `05_eval`).
+
+**Ước tính sau khi sửa:** mỗi repo run chính chỉ còn snapshot (E2 khoảng 15 GB, E1 khoảng 26 GB), thêm khoảng 8.6 GB cho hai ô checkpoint trong lúc train. Dung lượng private còn khoảng 2.4 GB cho dataset cộng vài chục MB kết quả mỗi run.
+
+**Chưa kiểm trên GPU:** đẩy và squash checkpoint thật, tốc độ upload, LoRA trên T4. Cách kiểm đề xuất: chạy cell 6 của `07_main` với E2 seed 0, xem commit squash sau checkpoint đầu (step 50).

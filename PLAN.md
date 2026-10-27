@@ -423,7 +423,7 @@ Mục đích: kiểm tra hạ tầng và kiểm tra **scorer chấm đúng**, **
 - [x] **Khóa giao thức** (2026-10-26, EXPERIMENTS.md "Khóa giao thức"): ghi toàn bộ quyết định vào `EXPERIMENTS.md` kèm ngày và commit hash. Chỉ từ thời điểm này mới được chạy test.
 
 ### Giai đoạn 3 — Thí nghiệm chính (E0 test, E1 → E3)
-- [ ] Eval E0 trên test
+- [x] Eval E0 trên test (2026-10-27, EXPERIMENTS.md "E0 trên test")
 - [ ] Với mỗi run: ghi giả thuyết vào `EXPERIMENTS.md` **trước** khi chạy
 - [ ] Train, eval test ở mọi checkpoint, ghi vào `results/all.csv`
 - [ ] Đọc output bộ P qua các checkpoint, ghi chú lúc kỹ năng bắt đầu xuất hiện
