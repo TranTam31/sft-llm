@@ -518,3 +518,37 @@ Base zero-shot và few-shot đều bằng 0 ở mọi metric trên (trừ `decis
 - **Mức đồng nghĩa:** giảm 0.7–2.7 điểm từ 402k, CI luôn chứa 0.
 - **Giảm ở đâu (vô nghĩa, cuối run):** `tool_name_acc` giảm 6.7 điểm [3.3, 10.3], nhiều nhất ở Parallel (14 điểm [5.2, 22.7]); `args_f1` giảm 9.3 điểm [5.9, 12.8]; `format_valid` giảm 1.7 điểm. Như vậy tên vô nghĩa làm model chọn sai tool và chép sai tên tham số nhiều hơn, chứ không làm hỏng format.
 - **Đọc:** như PLAN §4.4, đây là bằng chứng hỗ trợ việc dùng schema và cho thấy mức phụ thuộc vào tên tool khoảng 9 điểm, không phân định "đọc schema" với "nhớ tên". Kết luận về H3 đợi đủ 3 seed.
+
+## 2026-10-28 — Giả thuyết cho E1 seed 0 (ghi trước khi chạy)
+
+**Run:** `configs/e1_seq.yaml`, seed 0: D_chat × 2 epoch (step 1–625) rồi D_tool × 2 epoch (step 626–1250), một lịch lr, optimizer liên tục. Chấm test ở 18 snapshot (mục "Run chính: config, LoRA, lịch snapshot của E1"): thang tích lũy tới 3.2M token, ranh giới (step 625), thang từ ranh giới 25k → 1.6M token, rồi 6.4M và step cuối. Một seed nên mọi điều ở đây chỉ là đọc điểm kèm CI trong seed.
+
+**Giả thuyết run này kiểm:** H1, H2, H3 trên E1; và câu hỏi của PLAN §5.1 "học chat có tự sinh ra chút khả năng tool nào không" (snapshot ranh giới). So E1 với E2 là mô tả ở một seed; chưa có phép hiệu số ghép cặp giữa hai run (`stats.py` chỉ so với base), nên so cuối run dưới đây là so điểm.
+
+**Căn cứ:**
+- E2 seed 0, đổi trục sang token tool (D_tool chiếm khoảng 29.4% token assistant; tính gần đúng, chưa dùng `order.json`): `decision_bacc` đạt 0.77 ở khoảng 31k token tool; `format_valid` 0.96 ở 59k; `call_exact` 0.55 ở 118k; `clarify_correct` 0.56 ở khoảng 940k.
+- lr của E1 ở ranh giới đã còn khoảng 52% đỉnh (warmup 37 step, cosine), và lr trung bình của giai đoạn tool chỉ khoảng 19% đỉnh. Ở E2, kỹ năng tool hình thành trong 400k token đầu, lúc lr gần đỉnh. Nên tính theo token tool, E1 dự kiến học tool chậm hơn E2.
+
+**Dự đoán** ("xuất hiện" là t_reach với θ chính, trên test, T-seen; "token từ ranh giới" là thang thứ hai):
+1. **Giai đoạn chat (tới ranh giới):**
+   - `stop_rate` C đạt 0.5 ở mốc 100k hoặc 200k và ≥ 0.85 ở ranh giới. `stop_rate` T-seen ở ranh giới ≥ 0.7: model chỉ học chat vẫn trả lời bằng văn xuôi rồi dừng.
+   - Ranh giới (chỉ học chat): `format_valid` < 0.05, `call_exact` = 0 (CI chứa 0 khi so với base), `decision_bacc` ≈ 0.5, `false_call_rate` ≈ 0. Tức học chat **không** tự sinh khả năng gọi tool.
+   - `clarify_correct` ở ranh giới ≤ 0.1. `grounded_correct` ở ranh giới là điểm ít chắc nhất: model chat có thể chép giá trị từ kết quả tool đã có trong ngữ cảnh. Đoán 0.1–0.5 (360M-Instruct: 0.17).
+2. **Giai đoạn tool, thứ tự:** `decision_bacc` và `format_valid` đạt ở 25k–100k token từ ranh giới; `call_exact` ở 100k–400k; `clarify_correct` muộn nhất, đạt 0.5 ở 800k token từ ranh giới trở đi, hoặc không đạt tới cuối run.
+3. **Tốc độ so với E2 (trục token tool):** `call_exact` đạt 0.5 muộn hơn E2 (118k), ở khoảng 200k–400k token từ ranh giới, do lr thấp hơn.
+4. **H1:** `stop_rate` đạt trong giai đoạn chat, trước `call_exact` nhiều checkpoint. Với `format_valid` so với `call_exact` thì đạt, cách ít nhất một checkpoint của thang thứ hai. Có vững ở cả ba θ không thì chưa chắc, như ở E2.
+5. **H2:** "`decision_bacc` muộn nhất" sai, như E2. "`false_call_rate` vượt base rồi giảm" đúng: đỉnh ≥ 0.2 ở 25k–200k token từ ranh giới (CI loại trừ 0), xuống < 0.05 ở cuối run.
+6. **H3:** `call_exact` T-unseen cao hơn base few-shot (CI loại trừ 0). Mức giảm ghép cặp T-rename vô nghĩa ở cuối run trong khoảng 5–15 điểm; mức đồng nghĩa < 5 điểm.
+7. **Cuối run so với E2 seed 0 (so điểm):**
+   - `call_exact` T-seen trong khoảng 0.58–0.70 (E2: 0.66). Lr thấp ở giai đoạn tool kéo xuống, còn việc tool là dữ liệu cuối cùng (không bị chat chen giữa) kéo lên. Đoán hai yếu tố gần bù nhau.
+   - `clarify_correct` T-seen thấp hơn hoặc bằng E2 (0.62).
+   - Quên: perplexity wikitext-2 trong khoảng 13.6–14.8 (E2: 14.12), KL tới base 0.04–0.12; `stop_rate` C ≥ 0.85 (D_tool có 20% No-tool trả lời văn xuôi, nên model không quên cách dừng).
+
+**Kết quả coi là bất ngờ, phải kiểm hạ tầng trước khi đọc:**
+- `call_exact` > 0.05 ở ranh giới: kiểm D_chat có lẫn mẫu tool không, và kiểm thứ tự trong `order.json`.
+- Mọi metric kỹ năng rơi về gần 0 ngay sau ranh giới.
+- `stop_rate` C < 0.5 ở cuối run.
+- `call_exact` T-seen cuối run < 0.5.
+- Số step hay token khác lịch đã tính (ranh giới phải ở step 625).
+
+**Chạy:** trên Kaggle như E2. Sau khi nối Colab thì đóng hẳn tab Kaggle, để kiểm xem phiên còn sống không (CLAUDE.md). Ước tính khoảng 3.2 giờ train cộng khoảng 4.5 giờ chấm 18 snapshot, tức khoảng 7.7 giờ, nằm trong giới hạn 12 giờ của phiên. Hạn mức tuần sau run này khoảng 14/30 giờ.
