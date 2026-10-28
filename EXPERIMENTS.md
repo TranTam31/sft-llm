@@ -499,3 +499,22 @@ Base zero-shot và few-shot đều bằng 0 ở mọi metric trên (trừ `decis
 - Không có dấu hiệu "bất ngờ" nào đã ghi (không metric nào rơi về 0 sau khi đạt; `call_exact` cuối 0.66 cao hơn mức pilot 0.55 trên dev).
 
 **Việc còn lại cho run này:** hiệu số ghép cặp T-rename − T-seen kèm CI (H3); đọc output bộ P theo checkpoint (PLAN Giai đoạn 3).
+
+## 2026-10-28 — E2 seed 0: hiệu số ghép cặp T-rename − T-seen (H3)
+
+**Loại hoạt động:** phân tích thêm trên output đã chấm của E2 seed 0, không sinh lại, không đổi metric hay θ.
+
+**Phép tính:** `src/eval/stats.py` có thêm `rename_differences`, ghi `results/rename_test.csv` (git-ignore). Mỗi prompt T-rename được ghép với đúng prompt T-seen gốc của nó (`renamed_from`), cùng checkpoint. Hai bên dùng chung các lần rút cụm của bộ T-rename (cụm theo quan hệ của mẫu gốc, như PLAN §3.5), nên CI là CI của chính hiệu số. Tính cho `format_valid`, `call_exact`, `tool_name_acc`, `args_f1`, trên cả ba nhóm gộp và từng nhóm. 300 mẫu T-rename mỗi mức phủ đúng 300 mẫu cần tool của T-seen, nên điểm T-seen ở đây trùng với điểm T-seen ở mục kết quả; cái mới là CI của hiệu số.
+
+**`call_exact` cuối run (step 1250), ba nhóm gộp:** T-seen 0.663.
+
+| | T-rename | Mức giảm so với T-seen [CI 95%] |
+|---|---|---|
+| Vô nghĩa | 0.573 | 9.0 điểm [4.5, 13.8] |
+| Đồng nghĩa | 0.637 | 2.7 điểm [−0.7, 6.2] |
+
+- **Tiêu chí H3 (mức vô nghĩa):** giảm ≤ 10 điểm và cận trên CI < 20 điểm. Cả hai đạt ở snapshot cuối (một seed). Dự đoán ghi trước ("giảm trên 10 điểm, tiêu chí không đạt") sai, dù sát ngưỡng.
+- **Theo checkpoint (vô nghĩa):** 0 tới 104k; rồi 3.0, 7.3, 8.3, 10.7, 11.0, 9.0, 9.0 điểm (200k → cuối). Ở 1.6M và 3.2M mức giảm vượt 10 điểm; cận trên CI cao nhất là 15.8 điểm, luôn dưới 20. Cận dưới CI > 0 từ 402k, tức tên vô nghĩa làm giảm điểm thật, chỉ là ít.
+- **Mức đồng nghĩa:** giảm 0.7–2.7 điểm từ 402k, CI luôn chứa 0.
+- **Giảm ở đâu (vô nghĩa, cuối run):** `tool_name_acc` giảm 6.7 điểm [3.3, 10.3], nhiều nhất ở Parallel (14 điểm [5.2, 22.7]); `args_f1` giảm 9.3 điểm [5.9, 12.8]; `format_valid` giảm 1.7 điểm. Như vậy tên vô nghĩa làm model chọn sai tool và chép sai tên tham số nhiều hơn, chứ không làm hỏng format.
+- **Đọc:** như PLAN §4.4, đây là bằng chứng hỗ trợ việc dùng schema và cho thấy mức phụ thuộc vào tên tool khoảng 9 điểm, không phân định "đọc schema" với "nhớ tên". Kết luận về H3 đợi đủ 3 seed.
