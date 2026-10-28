@@ -4,7 +4,8 @@ Run: python -m src.eval.stats [--split dev] [--baseline e0/base-zero-shot] [--go
 Reads every results/<run>/<checkpoint>/{outputs.jsonl,metrics.json} of the split and writes, under results/:
 - all.csv: every metric per eval set and group with its 95% CI (PLAN 3.6 columns, plus `checkpoint`);
 - diff_base.csv: the paired difference from the baseline (base zero-shot) with its CI;
-- emergence.csv: t_reach at each threshold and t_improve per run, skill, T-seen/T-unseen.
+- emergence.csv: t_reach at each threshold and t_improve per run, skill, T-seen/T-unseen;
+- rename.csv: per T-rename set, the paired difference from the same prompts' T-seen originals (H3), with its CI.
 --go-no-go RUN prints the model go/no-go criteria (PLAN 6, Phase 2) read at the run's last checkpoint.
 
 Resampling is by cluster: two prompts share a cluster when they share their first user turn or a tool that matters
@@ -241,6 +242,42 @@ def evaluate(checkpoints: list[dict], items: list[dict], baseline: str | None, r
     return rows, diffs
 
 
+RENAME_METRICS = ("format_valid", "call_exact", "tool_name_acc", "args_f1")
+
+
+def rename_differences(checkpoints: list[dict], items: list[dict], reps: int = REPS) -> list[dict]:
+    """Rows of rename.csv (H3): per T-rename set, the metric on the renamed prompts minus the metric on their own
+    T-seen originals, with the CI of that difference. Both sides take the same resampled clusters (the rename cell's
+    draws, so the renamed value's CI matches all.csv), so the difference is paired prompt by prompt."""
+    by_id = {item["id"]: item for item in items}
+    out = []
+    for name in dict.fromkeys(item["set"] for item in items if item["meta"].get("renamed_from")):
+        renamed = [item for item in items if item["set"] == name and item["meta"]["renamed_from"] in by_id]
+        groups = [("tool", renamed)] + [(group, [item for item in renamed if item["group"] == group])
+                                        for group in dict.fromkeys(item["group"] for item in renamed)]
+        for group, population in groups:
+            weights = resample_weights(clusters(population, by_id), f"{name}/{group}", reps)
+            originals = [item["meta"]["renamed_from"] for item in population]
+            for checkpoint in checkpoints:
+                sides = []
+                for ids in (originals, [item["id"] for item in population]):
+                    missing = [i for i in ids if i not in checkpoint["records"]]
+                    if missing:
+                        raise SystemExit(f"{checkpoint['run']}/{checkpoint['checkpoint']} lacks {len(missing)} "
+                                         f"samples paired in {name}.")
+                    num, den = term_arrays([checkpoint["records"][i] for i in ids])
+                    sides.append((metric_values(num.sum(0), den.sum(0), RENAME_METRICS),
+                                  metric_values(weights @ num, weights @ den, RENAME_METRICS)))
+                (seen, seen_boot), (value, boot) = sides
+                head = {key: checkpoint[key] for key in FIELDS[:6]}
+                for metric in RENAME_METRICS:
+                    low, high = interval(boot[metric] - seen_boot[metric])
+                    out.append({**head, "split": None, "eval_set": name, "group": group, "metric": metric,
+                                "seen_value": float(seen[metric]), "value": float(value[metric]),
+                                "diff": float(value[metric] - seen[metric]), "diff_low": low, "diff_high": high})
+    return out
+
+
 # ---- Emergence and go/no-go ----------------------------------------------------------------
 
 def first_held(flags: list[bool]) -> tuple[int | None, str]:
@@ -351,8 +388,13 @@ def main():
     found = emergence(rows, diffs, args.baseline)
     if found:
         write_csv(args.out / f"emergence{suffix}.csv", found)
+    renames = rename_differences(checkpoints, items, args.reps)
+    for row in renames:
+        row["split"] = args.split
+    if renames:
+        write_csv(args.out / f"rename{suffix}.csv", renames)
     print(f"[stats] wrote {len(rows)} rows to all{suffix}.csv, {len(diffs)} to diff_base{suffix}.csv, "
-          f"{len(found)} to emergence{suffix}.csv")
+          f"{len(found)} to emergence{suffix}.csv, {len(renames)} to rename{suffix}.csv")
     if args.go_no_go:
         print_go_no_go(go_no_go(diffs, args.go_no_go))
 

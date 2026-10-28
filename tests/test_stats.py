@@ -4,7 +4,7 @@ import numpy as np
 
 from src.eval.run_eval import aggregate, score
 from src.eval.stats import (BEHAVIOUR, TOOL, clusters, evaluate, first_held, go_no_go, metric_values,
-                            resample_weights, term_arrays)
+                            rename_differences, resample_weights, term_arrays)
 
 
 TOOLS = [{"name": "get_weather", "description": "Weather now.",
@@ -114,6 +114,33 @@ class EvaluateTests(unittest.TestCase):
         result = go_no_go(diffs, "run")
         self.assertEqual(result["core"][0]["diff"], 1.0)    # format_valid of Single: 0 -> 1
         self.assertFalse(result["b"])
+
+
+class RenameTests(unittest.TestCase):
+    RENAMED = [item(n, entry["group"], entry["turns"][0]["content"], entry["expected_calls"],
+                    set_name="t_rename_nonsense", meta={"renamed_from": entry["id"]})
+               for n, entry in enumerate(ITEMS[:3])]
+
+    def checkpoint(self, seen_outputs, renamed_outputs):
+        records = {entry["id"]: record(entry, output) for entry, output in zip(ITEMS, seen_outputs)}
+        records.update({entry["id"]: record(entry, output) for entry, output in zip(self.RENAMED, renamed_outputs)})
+        return {"run": "run", "checkpoint": "step-1", "seed": 0, "step": 1, "tokens_seen": 1,
+                "assistant_tokens_seen": 1, "records": records}
+
+    def rows(self, renamed_outputs):
+        found = rename_differences([self.checkpoint(OUTPUTS, renamed_outputs)], ITEMS + self.RENAMED, reps=100)
+        return {(row["group"], row["metric"]): row for row in found}
+
+    def test_difference_is_paired_with_the_originals_only(self):
+        row = self.rows(["Sure."] * 3)[("tool", "call_exact")]
+        self.assertAlmostEqual(row["seen_value"], 2 / 3)    # the originals' own T-seen outputs
+        self.assertEqual(row["value"], 0)
+        self.assertAlmostEqual(row["diff"], -2 / 3)
+        self.assertEqual(self.rows(["Sure."] * 3)[("select", "call_exact")]["diff"], -1.0)
+
+    def test_same_outputs_give_a_zero_width_interval(self):
+        row = self.rows(OUTPUTS[:3])[("tool", "call_exact")]
+        self.assertEqual((row["diff"], row["diff_low"], row["diff_high"]), (0, 0, 0))
 
 
 if __name__ == "__main__":
