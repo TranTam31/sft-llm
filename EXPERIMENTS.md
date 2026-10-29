@@ -734,3 +734,49 @@ Perplexity wikitext-2 13.63 (E2: 14.12; base 13.01), KL tới base 0.043 nat/tok
 - Không model nào giảm điểm ARC-Easy/HellaSwag so với base, kể cả full fine-tune. Với 500 câu, CI của hiệu số rộng khoảng ±2 điểm, nên một mức quên nhỏ hơn cỡ đó không thấy được.
 - Phần "quên" của H5 theo benchmark: chưa có bằng chứng. Full fine-tune (E2) không giảm điểm nhiều hơn LoRA (E3); hiệu số E2 − E3 dưới 1 điểm, CI chứa 0.
 - Như vậy, dấu hiệu duy nhất của khác biệt về quên vẫn là perplexity wikitext-2 (E2 14.12, E3 13.63, base 13.01) và KL, mới là so điểm, chưa có CI. Muốn đọc H5 theo đúng tiêu chí PLAN (CI của hiệu số), cần thêm CI cho perplexity: ví dụ lưu NLL theo từng cửa sổ trong `src/eval/knowledge.py` rồi bootstrap ghép cặp theo cửa sổ.
+
+## 2026-10-29 — Perplexity có CI: base, E1, E2, E3 seed 0 (snapshot cuối)
+
+**Loại hoạt động:** đo lại perplexity wikitext-2 và KL tới base ở snapshot cuối, để có CI của hiệu số (tiêu chí "quên" của H5, PLAN §1). Không đổi cách tính: cùng văn bản, cùng cửa sổ 1024 token. Con số trùng với lần đo trước tới từng chữ số (E1 14.102, E2 14.124, E3 13.628, base 13.008).
+
+**Cách tính CI:** `src/eval/knowledge.py` nay lưu tổng NLL (và KL) của từng cửa sổ, kèm bài wikitext mà cửa sổ bắt đầu trong đó (theo tiêu đề cấp một " = … = "; tập test có 62 bài, 61 bài có cửa sổ bắt đầu). `python -m src.eval.knowledge --compare A.json B.json` bootstrap 2000 lần, lấy mẫu lại theo **bài** (cụm, như PLAN §3.5) cho cả hai bên trên cùng các cửa sổ, rồi tính lại perplexity mỗi bên. Base đo không kèm KL (`e0_test/knowledge-base.json`). Chạy bằng cell 7 của `07_main` trên T4 Kaggle (bundle `19cbe3d4…`), khoảng 3 phút mỗi model.
+
+**Hiệu số perplexity, CI 95%:**
+
+| | Hiệu số |
+|---|---|
+| E1 − base | +1.09 [+1.00, +1.20] |
+| E2 − base | +1.12 [+1.02, +1.24] |
+| E3 − base | +0.62 [+0.57, +0.68] |
+| E2 − E3 | **+0.50 [+0.45, +0.56]** |
+| E1 − E2 | −0.02 [−0.04, −0.005] |
+
+KL tới base: E2 − E3 +0.025 [+0.024, +0.026] nat/token; E1 − E2 −0.0004 [−0.001, +0.0003].
+
+**Đọc (một seed):**
+- Cả ba run làm perplexity wikitext tăng so với base, CI loại trừ 0: SFT có làm model kém đi trên văn bản thô, dù ARC-Easy/HellaSwag không đổi (mục trước).
+- **H5, phần quên:** full fine-tune (E2) làm perplexity tăng nhiều hơn LoRA r64 (E3) khoảng 0.5, CI của hiệu số loại trừ 0. Theo tiêu chí PLAN ("perplexity tăng nhiều hơn **hoặc** điểm benchmark giảm nhiều hơn"), phần này đạt ở seed 0, nhờ perplexity; benchmark không cho thấy khác biệt. Kết hợp với mục kết quả E3 (`call_exact` thấp hơn 2.3 điểm, cận dưới −4.9), seed 0 phù hợp với cả hai vế của H5. Kết luận chính thức đợi đủ seed.
+- E3 cũng lệch khỏi base ít hơn (KL), như PLAN lưu ý thì đó chỉ là chỉ báo thay đổi, không phải bằng chứng quên.
+- Thứ tự dữ liệu gần như không ảnh hưởng: E1 − E2 là −0.02, nhỏ tới mức không có ý nghĩa thực tế dù CI vừa loại trừ 0.
+
+## 2026-10-29 — Bộ P qua các checkpoint: E1, E2, E3 seed 0
+
+**Loại hoạt động:** đọc định tính output đã sinh của bộ P (60 prompt viết tay, PLAN §3.2) ở mọi snapshot của ba run (PLAN Giai đoạn 3). Không sinh lại. Output được gom theo từng prompt qua các checkpoint. Ba agent đọc song song, mỗi agent một run, theo cùng bộ câu hỏi. Các nhận xét chính dưới đây đã được kiểm lại trực tiếp trên `outputs.jsonl`, và các con số đếm là đếm bằng script. Bộ P nhỏ (mỗi nhóm 6–10 prompt), nên đây là mô tả, không phải số đo.
+
+**Cùng một tiến trình ở cả ba run:**
+- **Vỏ trước, ruột sau.** Thẻ `<tool_call>` xuất hiện trước khi nội dung đúng. Lúc đầu có các dạng: chép lại tool call có sẵn trong ngữ cảnh Multi-turn (từ snapshot đầu tiên); gọi lặp tới hết `max_new_tokens`; gộp nhiều lời gọi vào một JSON với khóa trùng (`"symbol": "AAPL", "symbol": "MSFT"`); tên tool bịa (`flight_price`, `is_virus`). Thẻ này còn bị áp lên prompt không có tool, với một chuỗi trơn bên trong (`<tool_call>"sleep_tips"</tool_call>`).
+- **Gọi tool đúng đến sớm, khoảng 200k token** (E2 ở step 38: 7/7 Single đúng tool và đúng định dạng). Lỗi còn lại tới cuối run là giá trị: tham số tùy chọn bịa (`date`, `unit`, `season`), dao động giữa các snapshot chứ không hội tụ, và một lỗi chọn tool ổn định (Select 05 luôn gọi `send_email` thay vì `send_sms`, ở cả ba run).
+- **Gọi tool thừa (No-tool):** cao nhất ở giai đoạn đầu học tool, rồi chuyển sang câu từ chối cố định của dữ liệu ("None of the tools I have can help…"). Riêng câu hỏi về "déjà vu" vẫn gọi `translate_text` tới 614 (E2, E3) hoặc tới cuối run (E1).
+- **Hỏi lại khi thiếu thông tin là kỹ năng yếu nhất trên P.** Ở snapshot cuối, model chỉ hỏi lại ở 1/6 prompt (E2), 2/6 (E1, E3); ở các prompt còn lại nó điền giá trị mặc định rồi gọi luôn: "New York", USD→EUR, `bill_amount: 100`, "+1234567890". Model hỏi lại ở prompt gửi email/SMS, nơi không có giá trị nào hợp lý để bịa; không bao giờ hỏi ở thời tiết, tiền tệ, phim, tiền tip. Điều này khác xa `clarify_correct` 0.50–0.62 trên test: prompt Missing-info của P cố ý mơ hồ hơn (thiếu thành phố mà không có gợi ý nào), còn ở test thiếu một tham số bắt buộc của câu hỏi xLAM/Glaive. Gợi ý (chưa kiểm): model học "hỏi khi không đoán được", chưa học "hỏi khi thiếu".
+- **Multi-turn:** từ khoảng 200k, cả 6 prompt trả lời từ kết quả tool, đôi khi bịa thêm chi tiết ("over the last 10 days") hoặc gộp mất thông tin.
+- **Chat và kiến thức:** câu trả lời dài ra ở nửa sau run và kéo theo câu sai (Canberra "in the state of Victoria" ở E2, "New South Wales" ở E3; Thế chiến II kết thúc "15 May 1945" ở E2). Bài thơ limerick lặp tới hết token ở mọi run. Một seed và một prompt mỗi loại, nên không đọc được đây là quên hay là nhiễu.
+
+**E3 so với E2** (cùng thứ tự mẫu, cùng step): E3 chậm khoảng một snapshot ở đầu. Ở step 19, E2 đã có `<tool_call>` ở 19/21 prompt cần tool, E3 chỉ 3/21 (và sai định dạng: khóa `"parameters"`, dạng giả code `get_stock_price(symbol: "AAPL")`). Ở step 38, E2 dừng bằng `<|im_end|>` ở 59/60 output, E3 ở 43/60. Từ khoảng 800k, hai run gần như trùng nhau, nhiều output cuối giống từng chữ. Khác biệt theo prompt ở cuối run không theo một hướng. Khớp với hiệu số ghép cặp trên test (E3 chậm hơn ở 100k–400k, đuổi kịp từ 800k).
+
+**E1 (học chat trước, tool sau):**
+- **Giai đoạn chat:** không có `<tool_call>` nào ở Single/Select/Parallel/No-tool/Missing-info. Model bịa kết quả bằng văn xuôi (giá NVDA "$1.00", rồi "$10.50", rồi "$1,200.00"), hoặc viết code gọi API (`requests` với `Bearer <KEY>`, `smtplib`) thay vì gọi tool. Không có câu từ chối nào. Ở Multi-turn, model chép lại tool call có sẵn trong ngữ cảnh không đơn điệu (2/6 ở 1.6M, 4/6 ở 3.2M, 1/6 ở ranh giới), khớp với `grounded_correct` dao động đã ghi ở mục kết quả E1.
+- **Ngay sau ranh giới, chat và kiến thức bị kéo về định dạng tool.** Ở +25k token, 15/20 prompt chat/kiến thức của P có `<tool_call>`, 17/20 ở +50k, rồi giảm dần. Bộ C của test cho cùng hình dạng: 46/150 output có `<tool_call>` ở +25k, 45/150 ở +50k, 6/150 ở +100k, 1/150 từ +400k tới cuối. E2 và E3 cao nhất là 13–14/150 ở một snapshot sớm, về 0 từ 800k. `stop_rate` C không bắt được hiện tượng này, vì `<tool_call>"…"</tool_call><|im_end|>` vẫn dừng đúng.
+- **Cuối run, P còn lỗi nặng hơn C:** 6/20 prompt chat/kiến thức của P vẫn hỏng ở step 1250. Trong đó, 3 câu thành tool call chứa chuỗi trơn ("What is the chemical symbol for gold?" → `<tool_call>"What is the chemical symbol for gold?"</tool_call>`), 2 câu bị từ chối "None of the tools I have can help…" (Pride and Prejudice, năm Thế chiến II kết thúc), 1 câu hỏi ngược lại thay vì trả lời. E2 và E3 trả lời bình thường cả 6. Trên C, E1 chỉ còn 1/150. Prompt của P ngắn và mang tính tra cứu, giống câu hỏi của dữ liệu tool hơn, nên có thể nhạy hơn. Học tool sau cùng (E1) để lại một dấu vết trên chat mà trộn (E2, E3) không để lại; độ lớn của nó phụ thuộc loại câu hỏi.
+- **Định dạng đến gần như tức thì:** ở +25k, hầu hết prompt cần tool đã có JSON đúng định dạng, không có pha nửa văn xuôi. Phần đến chậm là hành vi: khi nào gọi, khi nào hỏi lại, giá trị tham số.
+
+**Ghi chú đầy đủ** của ba lần đọc nằm ngoài repo (scratchpad của session 2026-10-29), không commit vì trích nguyên văn output; các điểm dùng ở đây đã được kiểm lại.
