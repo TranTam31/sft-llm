@@ -724,28 +724,37 @@ upload_file(path_or_fileobj=f"results/{RUN}/knowledge-{final}.json", path_in_rep
             repo_id=RESULTS_REPO, commit_message=f"{RUN}: knowledge")
 print("done", RUN)
 '''),
-        cell("markdown", """## 7. Chạy bù ARC-Easy/HellaSwag (base và run đã xong)
-Base và snapshot cuối của từng run trong `RUNS`; bỏ qua file đã có trong repo kết quả. Mỗi model khoảng một phút trên T4; commit cuối là `<run cuối của RUNS>: benchmarks`. So hai model: `python -m src.eval.benchmarks --compare A.json B.json`."""),
-        cell("code", '''from huggingface_hub import HfApi, upload_file
+        cell("markdown", """## 7. Chạy bù cho base và run đã xong
+ARC-Easy/HellaSwag, và perplexity/KL có số liệu theo từng cửa sổ (để tính CI), cho base và snapshot cuối của từng run trong `RUNS`; bỏ qua file đã có đủ trong repo kết quả. Mỗi model khoảng vài phút trên T4; cell in `done` khi xong. So hai model: `python -m src.eval.benchmarks --compare A.json B.json`, `python -m src.eval.knowledge --compare A.json B.json`."""),
+        cell("code", '''import json
+from huggingface_hub import HfApi, hf_hub_download, upload_file
 
 RUNS = ["e1_seq_s0", "e2_mix_s0", "e3_lora_r64_s0"]
 api = HfApi()
-done = set(api.list_repo_files(RESULTS_REPO))
+present = set(api.list_repo_files(RESULTS_REPO))
+
+
+def needed(path, key):
+    """The file is missing from the results repo, or lacks `key` (written by an older version of the script)."""
+    return path not in present or key not in json.loads(Path(hf_hub_download(RESULTS_REPO, path)).read_text())
+
+
 jobs = [("e0_test", "base", "base")]
 for run in RUNS:
     hub_id = f"{HF_USER}/smollm2-360m-{run.replace('_', '-')}"
     final = sorted(p for p in api.list_repo_files(hub_id) if p.startswith("snapshots/") and p.endswith("/meta.json"))[-1].split("/")[1]
-    local = Path(f"results/runs/{run}/snapshots/{final}")
-    if f"{run}/benchmarks-{final}.json" not in done and not local.exists():
-        api.snapshot_download(hub_id, allow_patterns=[f"snapshots/{final}/*"], local_dir=f"results/runs/{run}")
-    jobs.append((run, final, local))
-for run, name, model in jobs:
-    path = f"{run}/benchmarks-{name}.json"
-    if path in done:
-        print("skip", path)
-        continue
-    !python -m src.eval.benchmarks --model {model} --device cuda --output results/{path}
-    upload_file(path_or_fileobj=f"results/{path}", path_in_repo=path, repo_id=RESULTS_REPO, commit_message=f"{run}: benchmarks")
+    jobs.append((run, final, hub_id))
+for run, name, hub_id in jobs:
+    model = Path(f"results/runs/{run}/snapshots/{name}") if run != "e0_test" else "base"
+    for kind, key in (("benchmarks", "items"), ("knowledge", "windows")):
+        path = f"{run}/{kind}-{name}.json"
+        if not needed(path, key):
+            print("skip", path)
+            continue
+        if run != "e0_test" and not model.exists():
+            api.snapshot_download(hub_id, allow_patterns=[f"snapshots/{name}/*"], local_dir=f"results/runs/{run}")
+        !python -m src.eval.{kind} --model {model} --device cuda --output results/{path}
+        upload_file(path_or_fileobj=f"results/{path}", path_in_repo=path, repo_id=RESULTS_REPO, commit_message=f"{run}: {kind}")
 print("done")
 '''),
     ]
