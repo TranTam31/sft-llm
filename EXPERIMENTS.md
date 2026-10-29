@@ -709,3 +709,28 @@ Perplexity wikitext-2 13.63 (E2: 14.12; base 13.01), KL tới base 0.043 nat/tok
 - Không có dấu hiệu "bất ngờ" nào đã ghi: không có NaN; val loss tool cuối run (0.232) thấp hơn hẳn mức của E2 ở 400k; điểm của snapshot đã merge đi cùng chiều với val loss; `call_exact` cuối 0.64; perplexity thấp hơn E2; số step và token khớp E2.
 
 **Việc còn lại:** ARC-Easy/HellaSwag cho E1, E2, E3 ở snapshot cuối (phần "quên" của H5 theo PLAN §3.3); đọc output bộ P theo checkpoint; seed 1–2.
+
+## 2026-10-29 — ARC-Easy và HellaSwag cho base, E1, E2, E3 seed 0 (snapshot cuối)
+
+**Loại hoạt động:** đo thêm ở snapshot cuối của các run đã xong, cho phần "quên" của H5 (PLAN §1, §3.3). Không train lại, không đổi giao thức.
+
+**Cách đo:** `src/eval/benchmarks.py` (lm-evaluation-harness 0.4.13), 500 câu đầu của mỗi bộ, 0-shot, chấm theo log-likelihood, fp16 trên T4 Kaggle. Notebook `07_main` có thêm cell 7 chạy bù cho base và các run đã xong (bundle `c0aae56c…`); từ nay cell 6 cũng chạy bước này trước perplexity/KL. Mỗi model khoảng một phút. File ghi điểm từng câu, nên hai model được so ghép cặp theo câu: `python -m src.eval.benchmarks --compare A.json B.json`, bootstrap 2000 lần trên cùng tập câu cho cả hai bên. Câu được rút độc lập, không theo cụm. Kết quả: `<run>/benchmarks-<snapshot>.json` trong repo kết quả, base ở `e0_test/benchmarks-base.json`.
+
+**Điểm (acc / acc_norm):**
+
+| | ARC-Easy | HellaSwag |
+|---|---|---|
+| Base | 0.700 / 0.668 | 0.442 / 0.548 |
+| E1 seed 0 | 0.700 / 0.664 | 0.444 / 0.564 |
+| E2 seed 0 | 0.716 / 0.664 | 0.448 / 0.556 |
+| E3 LoRA r64 seed 0 | 0.716 / 0.674 | 0.452 / 0.560 |
+
+**Hiệu số ghép cặp (điểm, CI 95%):**
+- So với base, mọi hiệu số nằm trong khoảng −0.4 tới +1.6 điểm, và CI đều chứa 0. Ví dụ ARC-Easy acc: E1 0.0 [−2.0, +2.2], E2 +1.6 [−0.4, +3.4], E3 +1.6 [−0.4, +3.6]. HellaSwag acc_norm: E1 +1.6 [−0.4, +3.6], E2 +0.8 [−1.2, +2.8], E3 +1.2 [−0.4, +3.0].
+- E2 − E3 (H5, full fine-tune so với LoRA): ARC-Easy acc 0.0 [−1.4, +1.4], acc_norm −1.0 [−2.8, +0.8]; HellaSwag acc −0.4 [−1.6, +0.8], acc_norm −0.4 [−2.0, +1.2].
+- E1 − E2: ARC-Easy acc −1.6 [−3.2, 0.0]; các ô khác CI chứa 0.
+
+**Đọc (một seed):**
+- Không model nào giảm điểm ARC-Easy/HellaSwag so với base, kể cả full fine-tune. Với 500 câu, CI của hiệu số rộng khoảng ±2 điểm, nên một mức quên nhỏ hơn cỡ đó không thấy được.
+- Phần "quên" của H5 theo benchmark: chưa có bằng chứng. Full fine-tune (E2) không giảm điểm nhiều hơn LoRA (E3); hiệu số E2 − E3 dưới 1 điểm, CI chứa 0.
+- Như vậy, dấu hiệu duy nhất của khác biệt về quên vẫn là perplexity wikitext-2 (E2 14.12, E3 13.63, base 13.01) và KL, mới là so điểm, chưa có CI. Muốn đọc H5 theo đúng tiêu chí PLAN (CI của hiệu số), cần thêm CI cho perplexity: ví dụ lưu NLL theo từng cửa sổ trong `src/eval/knowledge.py` rồi bootstrap ghép cặp theo cửa sổ.
