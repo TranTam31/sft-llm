@@ -4,7 +4,7 @@ import numpy as np
 
 from src.eval.run_eval import aggregate, score
 from src.eval.stats import (BEHAVIOUR, TOOL, clusters, evaluate, first_held, go_no_go, metric_values,
-                            rename_differences, resample_weights, term_arrays)
+                            rename_differences, resample_weights, run_differences, term_arrays)
 
 
 TOOLS = [{"name": "get_weather", "description": "Weather now.",
@@ -141,6 +141,34 @@ class RenameTests(unittest.TestCase):
     def test_same_outputs_give_a_zero_width_interval(self):
         row = self.rows(OUTPUTS[:3])[("tool", "call_exact")]
         self.assertEqual((row["diff"], row["diff_low"], row["diff_high"]), (0, 0, 0))
+
+
+class CompareTests(unittest.TestCase):
+    def checkpoint(self, run, step, target, outputs):
+        return {"run": run, "checkpoint": f"step-{step}", "seed": 0, "step": step, "tokens_seen": step,
+                "assistant_tokens_seen": step, "target_tokens": target,
+                "records": {entry["id"]: record(entry, output) for entry, output in zip(ITEMS, outputs)}}
+
+    def rows(self, last_a):
+        silent = ["Sure."] * len(ITEMS)
+        checkpoints = [self.checkpoint("a", 4, 25000, silent), self.checkpoint("a", 9, None, silent),   # boundary
+                       self.checkpoint("a", 12, None, last_a),
+                       self.checkpoint("b", 5, 25000, silent), self.checkpoint("b", 12, None, OUTPUTS)]
+        return run_differences(checkpoints, ITEMS, "a", "b", reps=100)
+
+    def test_pairs_shared_rungs_and_the_last_step_only(self):
+        found = self.rows(OUTPUTS)
+        self.assertEqual({(row["snapshot"], row["step_a"], row["step_b"]) for row in found},
+                         {("25000", 4, 5), ("last", 12, 12)})
+
+    def test_difference_is_paired_prompt_by_prompt(self):
+        same = [row for row in self.rows(OUTPUTS) if row["snapshot"] == "last"]
+        self.assertTrue(all(row["diff"] == row["diff_low"] == row["diff_high"] == 0 for row in same))
+        at = {(row["snapshot"], row["eval_set"], row["group"], row["metric"]): row
+              for row in self.rows(["Sure."] * len(ITEMS))}
+        row = at[("last", "t_seen", "tool", "call_exact")]
+        self.assertAlmostEqual(row["diff"], -2 / 3)          # a says "Sure." where b calls right on 2 of 3
+        self.assertTrue(row["diff_low"] < row["diff"] < row["diff_high"] <= 0)
 
 
 if __name__ == "__main__":

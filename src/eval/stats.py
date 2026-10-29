@@ -1,11 +1,12 @@
 """Bootstrap CIs and emergence points (PLAN 3.5) from saved outputs.jsonl; no generation.
 
-Run: python -m src.eval.stats [--split dev] [--baseline e0/base-zero-shot] [--go-no-go e2_pilot]
+Run: python -m src.eval.stats [--split dev] [--baseline e0/base-zero-shot] [--go-no-go e2_pilot] [--compare A B]
 Reads every results/<run>/<checkpoint>/{outputs.jsonl,metrics.json} of the split and writes, under results/:
 - all.csv: every metric per eval set and group with its 95% CI (PLAN 3.6 columns, plus `checkpoint`);
 - diff_base.csv: the paired difference from the baseline (base zero-shot) with its CI;
 - emergence.csv: t_reach at each threshold and t_improve per run, skill, T-seen/T-unseen;
-- rename.csv: per T-rename set, the paired difference from the same prompts' T-seen originals (H3), with its CI.
+- rename.csv: per T-rename set, the paired difference from the same prompts' T-seen originals (H3), with its CI;
+- compare_<A>_<B>.csv (with --compare A B): run A minus run B on the same prompts at each shared snapshot, with its CI.
 --go-no-go RUN prints the model go/no-go criteria (PLAN 6, Phase 2) read at the run's last checkpoint.
 
 Resampling is by cluster: two prompts share a cluster when they share their first user turn or a tool that matters
@@ -201,8 +202,18 @@ def find_checkpoints(split: str, root: Path = RESULTS) -> list[dict]:
                    if line for record in [json.loads(line)] if record["set"] != "p"}
         found.append({"run": folder.parent.name, "checkpoint": folder.name, "seed": meta.get("seed"),
                       "step": meta.get("step"), "tokens_seen": meta.get("tokens_seen"),
-                      "assistant_tokens_seen": meta.get("assistant_tokens_seen"), "records": records})
+                      "assistant_tokens_seen": meta.get("assistant_tokens_seen"),
+                      "target_tokens": meta.get("target_tokens"), "records": records})
     return found
+
+
+def scored(checkpoint: dict, ids: list, weights: np.ndarray, metrics: tuple, what: str) -> tuple[dict, dict]:
+    """(point values, bootstrap replicates) of the metrics on these samples of the checkpoint."""
+    missing = [i for i in ids if i not in checkpoint["records"]]
+    if missing:
+        raise SystemExit(f"{checkpoint['run']}/{checkpoint['checkpoint']} lacks {len(missing)} {what}.")
+    num, den = term_arrays([checkpoint["records"][i] for i in ids])
+    return metric_values(num.sum(0), den.sum(0), metrics), metric_values(weights @ num, weights @ den, metrics)
 
 
 def evaluate(checkpoints: list[dict], items: list[dict], baseline: str | None, reps: int = REPS):
@@ -217,13 +228,7 @@ def evaluate(checkpoints: list[dict], items: list[dict], baseline: str | None, r
         ids = [item["id"] for item in population]
         prepared = []
         for checkpoint in checkpoints:
-            missing = [i for i in ids if i not in checkpoint["records"]]
-            if missing:
-                raise SystemExit(f"{checkpoint['run']}/{checkpoint['checkpoint']} lacks {len(missing)} samples of {name}.")
-            num, den = term_arrays([checkpoint["records"][i] for i in ids])
-            point = metric_values(num.sum(0), den.sum(0), metrics)
-            boot = metric_values(weights @ num, weights @ den, metrics)
-            prepared.append((checkpoint, point, boot))
+            prepared.append((checkpoint, *scored(checkpoint, ids, weights, metrics, f"samples of {name}")))
         base_entry = next((entry for entry in prepared if entry[0] is base), None)
         for checkpoint, point, boot in prepared:
             head = {key: checkpoint[key] for key in FIELDS[:6]}
@@ -261,13 +266,7 @@ def rename_differences(checkpoints: list[dict], items: list[dict], reps: int = R
             for checkpoint in checkpoints:
                 sides = []
                 for ids in (originals, [item["id"] for item in population]):
-                    missing = [i for i in ids if i not in checkpoint["records"]]
-                    if missing:
-                        raise SystemExit(f"{checkpoint['run']}/{checkpoint['checkpoint']} lacks {len(missing)} "
-                                         f"samples paired in {name}.")
-                    num, den = term_arrays([checkpoint["records"][i] for i in ids])
-                    sides.append((metric_values(num.sum(0), den.sum(0), RENAME_METRICS),
-                                  metric_values(weights @ num, weights @ den, RENAME_METRICS)))
+                    sides.append(scored(checkpoint, ids, weights, RENAME_METRICS, f"samples paired in {name}"))
                 (seen, seen_boot), (value, boot) = sides
                 head = {key: checkpoint[key] for key in FIELDS[:6]}
                 for metric in RENAME_METRICS:
@@ -275,6 +274,47 @@ def rename_differences(checkpoints: list[dict], items: list[dict], reps: int = R
                     out.append({**head, "split": None, "eval_set": name, "group": group, "metric": metric,
                                 "seen_value": float(seen[metric]), "value": float(value[metric]),
                                 "diff": float(value[metric] - seen[metric]), "diff_low": low, "diff_high": high})
+    return out
+
+
+def shared_snapshots(checkpoints: list[dict], run_a: str, run_b: str) -> list[tuple[str, dict, dict]]:
+    """(label, checkpoint of A, checkpoint of B) for the snapshots both runs have: the same cumulative-token rung
+    (target_tokens) and the last step. Snapshots only one run has (E1's boundary and its rungs counted from the
+    boundary) have no partner."""
+    def labelled(run):
+        found = [c for c in checkpoints if c["run"] == run and c["step"] is not None]
+        if not found:
+            raise SystemExit(f"No scored checkpoint of {run}.")
+        last = max(found, key=lambda c: c["step"])
+        out = {f"{c['target_tokens']}": c for c in found if c["target_tokens"] is not None and c is not last}
+        return {**out, "last": last}
+    a, b = labelled(run_a), labelled(run_b)
+    return [(label, a[label], b[label]) for label in a if label in b]
+
+
+def run_differences(checkpoints: list[dict], items: list[dict], run_a: str, run_b: str, reps: int = REPS) -> list[dict]:
+    """Rows of compare_<A>_<B>.csv: at each shared snapshot, run A's metric minus run B's on the same prompts (PLAN 3.5,
+    between two runs). Both runs take the same resampled clusters, so the difference is paired; the draws are the
+    ones of all.csv, so each side's CI matches it."""
+    by_id = {item["id"]: item for item in items}
+    pairs = shared_snapshots(checkpoints, run_a, run_b)
+    out = []
+    for name, group, population, metrics in cells(items):
+        weights = resample_weights(clusters(population, by_id), f"{name}/{group}", reps)
+        ids = [item["id"] for item in population]
+        for label, a, b in pairs:
+            (value_a, boot_a), (value_b, boot_b) = (scored(c, ids, weights, metrics, f"samples of {name}")
+                                                    for c in (a, b))
+            for metric in metrics:
+                if math.isnan(float(value_a[metric])):
+                    continue
+                low, high = interval(boot_a[metric] - boot_b[metric])
+                out.append({"run_a": run_a, "run_b": run_b, "snapshot": label, "step_a": a["step"],
+                            "step_b": b["step"], "assistant_tokens_a": a["assistant_tokens_seen"],
+                            "assistant_tokens_b": b["assistant_tokens_seen"], "split": None, "eval_set": name,
+                            "group": group, "metric": metric, "value_a": float(value_a[metric]),
+                            "value_b": float(value_b[metric]), "diff": float(value_a[metric] - value_b[metric]),
+                            "diff_low": low, "diff_high": high})
     return out
 
 
@@ -371,6 +411,7 @@ def main():
     parser.add_argument("--split", default="dev", choices=("dev", "test"))
     parser.add_argument("--baseline", default="e0/base-zero-shot", help="run/checkpoint the differences are from.")
     parser.add_argument("--go-no-go", metavar="RUN", help="Print the model go/no-go criteria for this run.")
+    parser.add_argument("--compare", nargs=2, metavar=("A", "B"), help="Paired difference run A minus run B.")
     parser.add_argument("--reps", type=int, default=REPS)
     parser.add_argument("--out", type=Path, default=RESULTS)
     args = parser.parse_args()
@@ -395,6 +436,13 @@ def main():
         write_csv(args.out / f"rename{suffix}.csv", renames)
     print(f"[stats] wrote {len(rows)} rows to all{suffix}.csv, {len(diffs)} to diff_base{suffix}.csv, "
           f"{len(found)} to emergence{suffix}.csv, {len(renames)} to rename{suffix}.csv")
+    if args.compare:
+        compared = run_differences(checkpoints, items, *args.compare, args.reps)
+        for row in compared:
+            row["split"] = args.split
+        path = args.out / f"compare_{'_'.join(args.compare)}{suffix}.csv"
+        write_csv(path, compared)
+        print(f"[stats] wrote {len(compared)} rows to {path.name}")
     if args.go_no_go:
         print_go_no_go(go_no_go(diffs, args.go_no_go))
 
