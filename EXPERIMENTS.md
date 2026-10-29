@@ -600,3 +600,35 @@ Perplexity wikitext-2 14.10 (E2: 14.12; base 13.01), KL tới base 0.067 nat/tok
 - Không có dấu hiệu "bất ngờ" nào đã ghi: `call_exact` ở ranh giới là 0; không metric nào sụp sau ranh giới; `stop_rate` C cuối 0.94; `call_exact` cuối 0.65; ranh giới đúng step 625.
 
 **Việc còn lại:** hiệu số ghép cặp giữa hai run (E1 − E2) trên cùng prompt, kèm CI; đọc output bộ P theo checkpoint.
+
+## 2026-10-29 — E1 − E2 seed 0: hiệu số ghép cặp giữa hai run
+
+**Loại hoạt động:** phân tích thêm trên output đã chấm của E1 và E2 seed 0. Không sinh lại, không đổi metric hay θ.
+
+**Phép tính:** `src/eval/stats.py` có thêm `run_differences`. Lệnh `python -m src.eval.stats --split test --baseline e0_test/base-zero-shot --compare e1_seq_s0 e2_mix_s0` ghi `results/compare_e1_seq_s0_e2_mix_s0_test.csv` (git-ignore).
+- Hai run được ghép ở những snapshot cả hai cùng có: cùng mốc token assistant cộng dồn (`target_tokens` 25k → 6.4M) và step cuối. Snapshot ranh giới của E1 và thang tính từ ranh giới không có cặp, nên không vào phép so này.
+- Hai bên dùng chung các lần rút cụm của từng tập (cũng là các lần rút của `all.csv`), nên CI là CI của chính hiệu số, theo cặp prompt (PLAN §3.5, "giữa hai run").
+- Một seed nên đây là bất định do tập prompt, chưa có biến thiên giữa các seed.
+
+**Snapshot cuối (step 1250), E1 − E2, điểm [CI 95%]:**
+
+| | T-seen | T-unseen |
+|---|---|---|
+| `format_valid` | −0.3 [−1.0, 0.0] | |
+| `call_exact` | −1.3 [−3.8, +1.0] | +1.3 [−0.6, +3.6] |
+| `tool_name_acc` | −0.3 [−1.8, +1.0] | |
+| `args_f1` | −1.4 [−2.9, −0.1] | |
+| `decision_bacc` | −0.2 [−1.7, +1.3] | |
+| `false_call_rate` | 0.0 [−2.9, +3.0] | |
+| `clarify_correct` | **−12.0 [−18.9, −6.2]** | **−9.0 [−14.7, −3.8]** |
+| `grounded_correct` | −3.0 [−6.9, 0.0] | +3.0 [0.0, +8.6] |
+| `call_exact` T-rename vô nghĩa / đồng nghĩa | −0.7 [−4.0, +2.4] / −1.7 [−4.4, +0.7] | |
+| `stop_rate` C | +0.7 [−4.5, +5.6] | |
+
+Snapshot 6.4M cho cùng bức tranh: `clarify_correct` −14.0 [−21.8, −7.4] (T-seen) và −9.0 [−14.7, −3.8] (T-unseen); các metric khác có CI chứa 0 hoặc lệch dưới 2 điểm.
+
+**Đọc (một seed):**
+- Cuối run, thứ tự dữ liệu không làm đổi điểm gọi tool. Hiệu số `call_exact`, `tool_name_acc`, `decision_bacc`, `false_call_rate` đều nhỏ hơn 2 điểm, CI chứa 0. `args_f1` T-seen thấp hơn 1.4 điểm, CI vừa loại trừ 0; mức này nhỏ, và với hàng trăm ô được so thì nên đọc là chưa chắc.
+- Mức phụ thuộc vào tên tool cũng như nhau: hiệu số T-rename giữa hai run có CI chứa 0.
+- Khác biệt duy nhất rõ và lặp lại là **hỏi lại khi thiếu thông tin**: E1 thấp hơn E2 khoảng 9–14 điểm, CI loại trừ 0 trên cả T-seen và T-unseen, ở cả 6.4M và step cuối. Ở mục kết quả E1, chênh lệch so điểm 0.50 so với 0.62 nay là hiệu số thật trong seed này. Không giống E1 chỉ chậm hơn: `clarify_correct` T-seen của E1 gần như đứng ở 0.45–0.51 từ 800k token tính từ ranh giới tới cuối run (0.45, 0.51, 0.48, 0.50), trong khi E2 lên 0.56 ở 3.2M token cộng dồn (khoảng 940k token tool) và 0.62 ở cuối. Cần seed 1–2 để biết hiệu số này có giữ qua seed không.
+- Các snapshot giữa run (25k → 3.2M token cộng dồn) chỉ cho thấy điều đã biết: E1 lúc đó đang ở giai đoạn chat nên mọi metric gọi tool bằng 0, còn E2 đã học tool. Phép so theo trục token tool (E1 tính từ ranh giới so với E2 ở cùng lượng token tool) không làm được theo cặp, vì hai run không có snapshot ở cùng lượng token tool.
