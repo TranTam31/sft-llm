@@ -666,3 +666,46 @@ Adapter có khoảng 34.7 triệu tham số train được (khoảng 1.09 triệ
 - Số step hay token khác E2 (phải là 1250 step, 6 527 256 token assistant).
 
 **Chạy:** trên Kaggle, notebook `07_main`, cell 6 với `CONFIG, SEED = "e3_lora_r64", 0`. Ước tính khoảng 3 giờ train cộng khoảng 2.7 giờ chấm 10 snapshot, tức khoảng 6 giờ, trong giới hạn 12 giờ của phiên. Hạn mức tuần đang dùng khoảng 15/30 giờ. Giữ tab Colab nối runtime suốt run (CLAUDE.md).
+
+## 2026-10-29 — Kết quả E3 LoRA r64 seed 0 (test)
+
+**Chạy:** `configs/e3_lora_r64.yaml`, seed 0, notebook `07_main` (bundle `6bd5ec75…`, commit `0af0c93`). Colab nối Kaggle Jupyter Server, T4, một GPU, tab Kaggle đóng suốt run. Tab Colab nối runtime liên tục, và phiên Kaggle không bị hủy lần nào (khoảng 6.9 giờ).
+- Train: 1250 step, 6 527 256 token assistant, đúng như E2. Snapshot ở cùng step với E2 (5, 9, 19, 38, 77, 155, 307, 614, 1226, 1250), và số token ở từng snapshot khớp E2 đến từng token: E3 học đúng thứ tự mẫu của E2.
+- Adapter có 34 734 080 tham số train được. Train mất khoảng 3.9 giờ (khoảng 10.8 giây/step, gồm cả thời gian merge và lưu snapshot), GPU đỉnh 8.8 GiB. Không lần đẩy checkpoint nào lỗi.
+- Val loss ở step cuối: tool seen 0.232 (E2: 0.228), tool unseen 0.232 (0.231), chat 0.939 (0.937).
+- Chấm test 10 snapshot, khoảng 15–17 phút mỗi snapshot.
+- Trọng số: `trantam31/smollm2-360m-e3-lora-r64-s0` (public, snapshot đã merge). Output và metric: `trantam31/smollm2-360m-results`, thư mục `e3_lora_r64_s0/` (private).
+- So với E2: `python -m src.eval.stats --split test --baseline e0_test/base-zero-shot --compare e3_lora_r64_s0 e2_mix_s0`.
+
+**Snapshot cuối (step 1250), test, CI bootstrap 95% theo cụm; cột phải là hiệu số ghép cặp E3 − E2 (điểm):**
+
+| | E3 T-seen | E3 − E2 T-seen | E3 T-unseen | E3 − E2 T-unseen |
+|---|---|---|---|---|
+| `format_valid` | 0.99 [0.98, 1.00] | −0.7 [−2, 0] | | |
+| `call_exact` | 0.64 [0.59, 0.69] | −2.3 [−4.9, 0.0] | 0.81 [0.75, 0.86] | +1.0 [−1.1, +3.3] |
+| `decision_bacc` | 1.00 | +0.5 [0, +2] | | |
+| `false_call_rate` | 0.00 | −1.0 [−3, 0] | | |
+| `clarify_correct` | 0.59 [0.47, 0.70] | −3.0 [−9.9, +4.4] | 0.61 [0.40, 0.84] | 0.0 [−4.6, +4.8] |
+| `grounded_correct` | 0.96 [0.93, 1.00] | −1.0 [−2.5, 0.0] | 0.96 | +1.0 [0.0, +3.8] |
+| `call_exact` T-rename vô nghĩa / đồng nghĩa | 0.56 / 0.61 | −1.3 [−4, +2] / −2.3 [−4.7, −0.3] | | |
+| `stop_rate` C | 0.89 [0.84, 0.94] | −4.0 [−9.5, +1.4] | | |
+
+Perplexity wikitext-2 13.63 (E2: 14.12; base 13.01), KL tới base 0.043 nat/token (E2: 0.068).
+
+**t_reach (θ chính, T-seen; token assistant):** `format_valid`, `stop_rate`, `decision_bacc`, `grounded_correct` 200k → `tool_name_acc` 402k → `call_exact` 803k → `clarify_correct` 3.2M. T-unseen giống vậy, trừ `call_exact` đạt từ 402k. So với E2, mỗi mốc bằng hoặc muộn hơn một checkpoint.
+
+**Giữa run, E3 chậm hơn rồi đuổi kịp** (E3 − E2, T-seen): ở 200k, `format_valid` −16.3 điểm [−21, −12], `call_exact` −15.0 [−20, −10], `tool_name_acc` −24.7 [−31, −18]; ở 400k còn −4 tới −7 điểm; từ 800k các hiệu số này dưới 3 điểm. `false_call_rate` của E3 cao hơn E2 ở 800k và 1.6M (+5 [+1, +10], +9 [+4, +15]), rồi cùng về 0. `stop_rate` C của E3 thấp hơn E2 khoảng 5–8 điểm suốt từ 400k tới 6.4M (CI loại trừ 0 ở vài snapshot), ở cuối −4.0 với CI chứa 0.
+
+**`false_call_rate` T-seen theo checkpoint:** 0, 0, 0.02, 0.37 [0.28, 0.46] (200k), 0.24, 0.22, 0.11, 0.02, 0.00, 0.00.
+
+**Đối chiếu với dự đoán ghi trước khi chạy** (một seed):
+1. Thứ tự: đúng. Như E2, mỗi mốc lệch E2 không quá một checkpoint, và lệch đều về phía muộn hơn (`decision_bacc`, `tool_name_acc`, `call_exact`).
+2. H1: sai theo hướng tốt hơn. Dự đoán là "đạt ở θ chính, không vững qua ba θ". Thực tế vững ở cả ba θ: `format_valid` đạt ở 200k với cả 0.3, 0.5, 0.7; `call_exact` đạt ở 402k (θ 0.3), 803k (θ 0.5), không đạt 0.7. Trên T-unseen cũng vững (200k so với 402k ở cả ba θ). Đây là run đầu tiên H1 vững theo tiêu chí PLAN §3.5. Một cách đọc: E3 học `call_exact` chậm hơn E2 nên khoảng cách với format giãn ra, chứ không phải format đến sớm hơn.
+3. H2: đúng. "`decision_bacc` muộn nhất" sai (nó đạt ở 200k, trước `call_exact`). "`false_call_rate` vượt base rồi giảm" đúng: đỉnh 0.37 [0.28, 0.46] ở 200k, về 0.00 ở cuối.
+4. H3: đúng. `call_exact` T-unseen 0.81, base few-shot 0. Mức giảm ghép cặp khi đổi tên vô nghĩa là 8.0 điểm [3.0, 12.9], trong khoảng 5–15 và đạt tiêu chí H3; mức đồng nghĩa 2.7 điểm [−1.0, 6.3].
+5. H5, khả năng: đúng. `call_exact` T-seen 0.64, trong khoảng 0.55–0.68. Hiệu số E3 − E2 là −2.3 điểm [−4.9, 0.0], trong khoảng −8 tới +2 đã đoán. Cận dưới CI không vượt quá −5 như dự đoán là "có thể". Ở seed này, LoRA r64 kém full fine-tune không quá 5 điểm. PLAN đọc tiêu chí này theo trung bình 3 seed. `clarify_correct` thấp hơn 3 điểm, trong khoảng −15 tới 0 đã đoán, nhưng CI chứa 0.
+6. H5, quên: đúng. Perplexity 13.63 trong khoảng 13.3–13.9, KL 0.043 trong khoảng 0.02–0.05, đều thấp hơn E2. Mới là so điểm ở một seed, chưa có CI, chưa có ARC-Easy/HellaSwag. `stop_rate` C 0.89 ≥ 0.85.
+7. Tài nguyên: đúng. GPU đỉnh 8.8 GiB, thấp hơn E2 (11.1 GiB). Tốc độ chậm hơn E2 khoảng 17%, trong khoảng ±20%.
+- Không có dấu hiệu "bất ngờ" nào đã ghi: không có NaN; val loss tool cuối run (0.232) thấp hơn hẳn mức của E2 ở 400k; điểm của snapshot đã merge đi cùng chiều với val loss; `call_exact` cuối 0.64; perplexity thấp hơn E2; số step và token khớp E2.
+
+**Việc còn lại:** ARC-Easy/HellaSwag cho E1, E2, E3 ở snapshot cuối (phần "quên" của H5 theo PLAN §3.3); đọc output bộ P theo checkpoint; seed 1–2.
