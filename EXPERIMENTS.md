@@ -552,3 +552,51 @@ Base zero-shot và few-shot đều bằng 0 ở mọi metric trên (trừ `decis
 - Số step hay token khác lịch đã tính (ranh giới phải ở step 625).
 
 **Chạy:** trên Kaggle như E2. Sau khi nối Colab thì đóng hẳn tab Kaggle, để kiểm xem phiên còn sống không (CLAUDE.md). Ước tính khoảng 3.2 giờ train cộng khoảng 4.5 giờ chấm 18 snapshot, tức khoảng 7.7 giờ, nằm trong giới hạn 12 giờ của phiên. Hạn mức tuần sau run này khoảng 14/30 giờ.
+
+## 2026-10-28 — Kết quả E1 seed 0 (test)
+
+**Chạy:** `configs/e1_seq.yaml`, seed 0, notebook `07_main` (bundle `51099f04…`, commit `e447030`), Colab nối Kaggle Jupyter Server, T4, một GPU, tab Kaggle đóng suốt run. Phiên Kaggle bị hủy hai lần, cả hai lần khoảng 35–50 phút sau khi tab Colab mất kết nối runtime vì mạng phía máy người dùng: lần đầu sau checkpoint step 950 (resume từ đó, mất dưới 50 step), lần hai lúc đang chấm snapshot step 7 (chạy lại cell 6, nó bỏ qua train và các snapshot đã chấm). Chi tiết ở CLAUDE.md.
+- Train: 1250 step, 6 527 256 token assistant; ranh giới chat → tool ở step 625 (4.61M token), đúng lịch. Khoảng 8.4 giây/step.
+- Chấm test 18 snapshot, khoảng 14–17 phút mỗi snapshot. Hạn mức Kaggle cho run này khoảng 9 giờ (tính cả phần chạy lại).
+- Trọng số: `trantam31/smollm2-360m-e1-seq-s0` (public). Output và metric: `trantam31/smollm2-360m-results`, thư mục `e1_seq_s0/` (private).
+
+**Snapshot cuối (step 1250), test, CI bootstrap 95% theo cụm** (E2 seed 0 trong ngoặc, so điểm):
+
+| | T-seen | T-unseen |
+|---|---|---|
+| `format_valid` | 1.00 (1.00) | |
+| `call_exact` | 0.65 [0.59, 0.70] (0.66) | 0.81 [0.76, 0.87] (0.80) |
+| `decision_bacc` | 0.99 [0.98, 1.00] (0.995) | |
+| `false_call_rate` | 0.01 [0.00, 0.03] (0.01) | |
+| `clarify_correct` | 0.50 [0.36, 0.62] (0.62) | |
+| `grounded_correct` | 0.94 [0.89, 0.99] (0.97) | |
+| `stop_rate` C | 0.94 [0.90, 0.98] (0.93) | |
+
+Perplexity wikitext-2 14.10 (E2: 14.12; base 13.01), KL tới base 0.067 nat/token (E2: 0.068).
+
+**Ranh giới (step 625, chỉ học chat):** `format_valid`, `tool_name_acc`, `call_exact` đều bằng 0 trên T-seen và T-unseen, và hiệu số so với base là 0 với CI [0, 0]; `decision_bacc` 0.5, `false_call_rate` 0. `stop_rate` C 0.90, T-seen 0.49 (Single 0.48, Select 0.30, Parallel 0.24, No-tool 0.59, Missing-info 0.36, Multi-turn 0.99). `clarify_correct` 0.01. `grounded_correct` 0.50 [0.34, 0.70].
+
+**Giai đoạn tool, T-seen, theo token từ ranh giới** (25k, 50k, 100k, 200k, 400k, 800k, 1.6M):
+- `format_valid` 0.87, 0.96, 0.98, 0.98, 0.98, 1.00, 1.00.
+- `call_exact` 0.32, 0.47, 0.55, 0.57, 0.59, 0.64, 0.65.
+- `decision_bacc` 0.68, 0.71, 0.88, 0.90, 0.94, 0.97, 0.99.
+- `false_call_rate` 0.64 [0.54, 0.73], 0.58, 0.23, 0.19, 0.11, 0.05, 0.01.
+- `clarify_correct` 0.00, 0.03, 0.10, 0.31, 0.41, 0.45, 0.51.
+
+**t_reach (θ chính, T-seen):** `stop_rate` 404k (giai đoạn chat) → `grounded_correct` ranh giới → `format_valid`, `tool_name_acc` 25k từ ranh giới → `decision_bacc`, `call_exact` 100k → `clarify_correct` chỉ đạt ở checkpoint cuối ("chưa xác nhận"; T-unseen đạt ở 1.6M).
+
+**Một điều thấy được ở giai đoạn chat (không nằm trong dự đoán):** `grounded_correct` T-seen là 0.81–0.83 ở 404k–800k, rơi xuống 0.24–0.26 ở 1.6M–3.2M, rồi 0.50 ở ranh giới. Không phải lỗi hạ tầng: D_chat không có `<tool_call>` nào, và ở cả bốn snapshot không mẫu Single/Select/Parallel nào sinh `<tool_call>`. Nhưng ở Multi-turn, nơi ngữ cảnh đã có một lượt assistant gọi tool, model chỉ học chat **chép lại lời gọi tool** thay vì trả lời bằng kết quả: tỷ lệ output có `<tool_call>` là 0.01 ở 800k, 0.65 ở 1.6M, 0.62 ở 3.2M, 0.32 ở ranh giới. Tức model chat bắt chước định dạng gọi tool có sẵn trong ngữ cảnh, dù chưa học gọi tool khi chỉ có schema.
+
+**Đối chiếu với dự đoán ghi trước khi chạy** (một seed):
+1. Giai đoạn chat: phần lớn đúng, hai chỗ sai.
+   - Đúng: ở ranh giới, các metric gọi tool bằng 0 (học chat không tự sinh khả năng gọi tool); `stop_rate` C 0.90 ≥ 0.85; `clarify_correct` ≤ 0.1; `grounded_correct` 0.50, ở mép trên khoảng 0.1–0.5 đã đoán (nhưng không đơn điệu, xem trên).
+   - Sai: `stop_rate` C đạt 0.5 ở 404k, muộn hơn mốc 100k–200k đã đoán. `stop_rate` T-seen ở ranh giới 0.49, dưới mức ≥ 0.7 đã đoán: khi system prompt có schema tool, model chỉ học chat dừng kém hơn hẳn, nhất là Select và Parallel.
+2. Thứ tự ở giai đoạn tool: đúng. `format_valid` 25k, `decision_bacc` 100k (trong khoảng 25k–100k), `call_exact` 100k (mép dưới của 100k–400k), `clarify_correct` muộn nhất.
+3. Tốc độ so với E2 theo token tool: sai. Dự đoán E1 chậm hơn (`call_exact` đạt 0.5 ở 200k–400k); thực tế đạt ở 100k token tool, so với khoảng 118k của E2 (thang snapshot của E2 thưa, 59k rồi 118k, nên chỉ nói được là E1 không chậm hơn). lr thấp hơn ở giai đoạn tool không làm chậm việc học tool.
+4. H1: `stop_rate` đạt ở giai đoạn chat, trước `call_exact` 7 checkpoint. `format_valid` trước `call_exact` hai checkpoint (25k so với 100k) ở θ chính, nhưng không vững theo PLAN §3.5: ở θ = 0.3 `call_exact` cũng đạt ở 25k. Trên T-unseen chỉ cách một checkpoint. Giống E2.
+5. H2: "`decision_bacc` muộn nhất" sai (cùng checkpoint với `call_exact`, trước `clarify_correct`). "`false_call_rate` vượt base rồi giảm" đúng: đỉnh 0.64 [0.54, 0.73] ở 25k từ ranh giới, cao hơn đỉnh của E2 (0.38), xuống 0.01 ở cuối.
+6. H3: đúng. `call_exact` T-unseen 0.81, base few-shot 0. Mức giảm ghép cặp ở T-rename vô nghĩa là 8.3 điểm [3.8, 13.1], trong khoảng 5–15 và đạt tiêu chí H3; mức đồng nghĩa 3.0 điểm [−0.7, 6.8], dưới 5.
+7. Cuối run so với E2: đúng. `call_exact` 0.65 trong khoảng 0.58–0.70; `clarify_correct` 0.50, thấp hơn E2 (0.62); perplexity 14.10, KL 0.067, `stop_rate` C 0.94 đều trong khoảng đã đoán. Chưa có hiệu số ghép cặp giữa hai run nên chưa nói được chênh lệch nào là thật.
+- Không có dấu hiệu "bất ngờ" nào đã ghi: `call_exact` ở ranh giới là 0; không metric nào sụp sau ranh giới; `stop_rate` C cuối 0.94; `call_exact` cuối 0.65; ranh giới đúng step 625.
+
+**Việc còn lại:** hiệu số ghép cặp giữa hai run (E1 − E2) trên cùng prompt, kèm CI; đọc output bộ P theo checkpoint.
