@@ -1,6 +1,6 @@
 import unittest
 
-from src.eval.benchmarks import resolve, summarise
+from src.eval.benchmarks import item_scores, paired_differences, resolve, summarise
 
 
 class BenchmarkTests(unittest.TestCase):
@@ -15,6 +15,20 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(resolve("chat_reference", None, "configs/models.yaml"),
                          ("HuggingFaceTB/SmolLM2-360M-Instruct", "a10cc1512eabd3dde888204e902eca88bddb4951"))
         self.assertEqual(resolve("org/model", "abc", "configs/models.yaml"), ("org/model", "abc"))
+
+    def test_item_scores_keep_both_accuracies_per_document(self):
+        samples = {"arc_easy": [{"doc_id": 0, "acc": 1.0, "acc_norm": 0.0}, {"doc_id": 1, "acc": 0.0, "acc_norm": 1.0}]}
+        self.assertEqual(item_scores(samples, tasks=("arc_easy",)), {"arc_easy": {"0": [1.0, 0.0], "1": [0.0, 1.0]}})
+
+    def test_paired_difference_uses_shared_items_only(self):
+        a = {"items": {"arc_easy": {"0": [1, 1], "1": [1, 0], "2": [0, 0]}}}
+        b = {"items": {"arc_easy": {"0": [0, 1], "1": [0, 0]}}}
+        rows = {r["metric"]: r for r in paired_differences(a, b, reps=200)}
+        self.assertEqual(rows["acc"]["n"], 2)
+        self.assertEqual(rows["acc"]["diff"], 1.0)               # A right on both shared items, B on neither
+        self.assertEqual((rows["acc"]["diff_low"], rows["acc"]["diff_high"]), (1.0, 1.0))
+        self.assertEqual(rows["acc_norm"]["diff"], 0.0)
+        self.assertLessEqual(rows["acc_norm"]["diff_low"], 0.0)
 
 
 if __name__ == "__main__":

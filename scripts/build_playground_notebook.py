@@ -632,7 +632,7 @@ def build_main():
     encoded, digest = source_bundle()
     cells = [
         cell("markdown", """# Run chính — train, chấm test ở mọi snapshot, đẩy kết quả
-Một run của Giai đoạn 3 (PLAN §5.1, EXPERIMENTS.md "Khóa giao thức"): `CONFIG` là `e1_seq`, `e2_mix`, `e3_lora_r64` hoặc `e3_lora_r8`, `SEED` là 0, 1 hoặc 2. Cell 6 làm hết một mạch: train (hoặc resume), chấm **test** ở mọi snapshot, perplexity và KL của snapshot cuối, rồi đẩy kết quả. Dùng runtime **T4 GPU**; một run full fine-tune khoảng 6 giờ GPU, nên phải chạy qua nhiều lần.
+Một run của Giai đoạn 3 (PLAN §5.1, EXPERIMENTS.md "Khóa giao thức"): `CONFIG` là `e1_seq`, `e2_mix`, `e3_lora_r64` hoặc `e3_lora_r8`, `SEED` là 0, 1 hoặc 2. Cell 6 làm hết một mạch: train (hoặc resume), chấm **test** ở mọi snapshot, ARC-Easy/HellaSwag, perplexity và KL của snapshot cuối, rồi đẩy kết quả. Cell 7 chạy bù ARC-Easy/HellaSwag cho base và các run đã xong trước khi cell 6 có bước này. Dùng runtime **T4 GPU**; một run full fine-tune khoảng 6 giờ GPU, nên phải chạy qua nhiều lần.
 
 Trên Hub:
 - Repo model `<username>/smollm2-360m-<run>` (public với run chính): snapshot, hai ô `checkpoint-a/`, `checkpoint-b/` để resume (luân phiên: còn checkpoint trước đó nếu bản mới nhất hỏng; lịch sử được squash sau mỗi lần đẩy, xóa khi run xong), metric train.
@@ -641,7 +641,7 @@ Trên Hub:
 Bị ngắt ở bất kỳ đâu: kết nối lại, chạy lại cell 1–5 rồi cell 6. Cell 6 tự resume từ checkpoint mới nhất dùng được nếu train chưa xong, bỏ qua train nếu đã xong, và bỏ qua snapshot đã có kết quả trong repo kết quả.
 """),
         cell("markdown", "## 1. Cài thư viện"),
-        cell("code", install_code(INFERENCE_PINS + TRAINING_PINS)),
+        cell("code", install_code(INFERENCE_PINS + TRAINING_PINS + EVAL_PINS)),
         cell("markdown", "## 2. Nạp mã nguồn của dự án"),
         cell("code", bundle_code(encoded, digest)),
         cell("markdown", "## 3. Kiểm tra mã"),
@@ -716,10 +716,37 @@ final = snapshots[-1].split("/")[1]
 local = Path(f"results/runs/{RUN}/snapshots/{final}")
 if not local.exists():
     api.snapshot_download(HUB_MODEL_ID, allow_patterns=[f"snapshots/{final}/*"], local_dir=f"results/runs/{RUN}")
+!python -m src.eval.benchmarks --model {local} --device cuda --output results/{RUN}/benchmarks-{final}.json
+upload_file(path_or_fileobj=f"results/{RUN}/benchmarks-{final}.json", path_in_repo=f"{RUN}/benchmarks-{final}.json",
+            repo_id=RESULTS_REPO, commit_message=f"{RUN}: benchmarks")
 !python -m src.eval.knowledge --model {local} --device cuda --output results/{RUN}/knowledge-{final}.json
 upload_file(path_or_fileobj=f"results/{RUN}/knowledge-{final}.json", path_in_repo=f"{RUN}/knowledge-{final}.json",
             repo_id=RESULTS_REPO, commit_message=f"{RUN}: knowledge")
 print("done", RUN)
+'''),
+        cell("markdown", """## 7. Chạy bù ARC-Easy/HellaSwag (base và run đã xong)
+Base và snapshot cuối của từng run trong `RUNS`; bỏ qua file đã có trong repo kết quả. Mỗi model khoảng một phút trên T4; commit cuối là `<run cuối của RUNS>: benchmarks`. So hai model: `python -m src.eval.benchmarks --compare A.json B.json`."""),
+        cell("code", '''from huggingface_hub import HfApi, upload_file
+
+RUNS = ["e1_seq_s0", "e2_mix_s0", "e3_lora_r64_s0"]
+api = HfApi()
+done = set(api.list_repo_files(RESULTS_REPO))
+jobs = [("e0_test", "base", "base")]
+for run in RUNS:
+    hub_id = f"{HF_USER}/smollm2-360m-{run.replace('_', '-')}"
+    final = sorted(p for p in api.list_repo_files(hub_id) if p.startswith("snapshots/") and p.endswith("/meta.json"))[-1].split("/")[1]
+    local = Path(f"results/runs/{run}/snapshots/{final}")
+    if f"{run}/benchmarks-{final}.json" not in done and not local.exists():
+        api.snapshot_download(hub_id, allow_patterns=[f"snapshots/{final}/*"], local_dir=f"results/runs/{run}")
+    jobs.append((run, final, local))
+for run, name, model in jobs:
+    path = f"{run}/benchmarks-{name}.json"
+    if path in done:
+        print("skip", path)
+        continue
+    !python -m src.eval.benchmarks --model {model} --device cuda --output results/{path}
+    upload_file(path_or_fileobj=f"results/{path}", path_in_repo=path, repo_id=RESULTS_REPO, commit_message=f"{run}: benchmarks")
+print("done")
 '''),
     ]
     write_notebook("07_main.ipynb", cells, digest)
