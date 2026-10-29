@@ -632,3 +632,37 @@ Snapshot 6.4M cho cùng bức tranh: `clarify_correct` −14.0 [−21.8, −7.4]
 - Mức phụ thuộc vào tên tool cũng như nhau: hiệu số T-rename giữa hai run có CI chứa 0.
 - Khác biệt duy nhất rõ và lặp lại là **hỏi lại khi thiếu thông tin**: E1 thấp hơn E2 khoảng 9–14 điểm, CI loại trừ 0 trên cả T-seen và T-unseen, ở cả 6.4M và step cuối. Ở mục kết quả E1, chênh lệch so điểm 0.50 so với 0.62 nay là hiệu số thật trong seed này. Không giống E1 chỉ chậm hơn: `clarify_correct` T-seen của E1 gần như đứng ở 0.45–0.51 từ 800k token tính từ ranh giới tới cuối run (0.45, 0.51, 0.48, 0.50), trong khi E2 lên 0.56 ở 3.2M token cộng dồn (khoảng 940k token tool) và 0.62 ở cuối. Cần seed 1–2 để biết hiệu số này có giữ qua seed không.
 - Các snapshot giữa run (25k → 3.2M token cộng dồn) chỉ cho thấy điều đã biết: E1 lúc đó đang ở giai đoạn chat nên mọi metric gọi tool bằng 0, còn E2 đã học tool. Phép so theo trục token tool (E1 tính từ ranh giới so với E2 ở cùng lượng token tool) không làm được theo cặp, vì hai run không có snapshot ở cùng lượng token tool.
+
+## 2026-10-29 — Giả thuyết cho E3 LoRA r64 seed 0 (ghi trước khi chạy)
+
+**Run:** `configs/e3_lora_r64.yaml`, seed 0. Dữ liệu, số epoch, lịch lr (warmup 3% + cosine) và lịch snapshot như E2. Khác E2 ở hai điểm: chỉ train adapter LoRA r = 64 (alpha 128, dropout 0.05, gắn vào q/k/v/o/gate/up/down của 32 layer, base và embedding đứng yên), và lr 2e-4 thay vì 5e-5. Thứ tự mẫu sinh từ `seed` và `order` (`src/train_data.py`), nên E3 seed 0 học đúng thứ tự mẫu của E2 seed 0, và các snapshot rơi vào cùng step. Vì vậy E3 − E2 được ghép cặp ở cả 10 snapshot (`--compare e3_lora_r64_s0 e2_mix_s0`). Chênh lệch giữa hai run là do LoRA cộng với lr khác nhau, không tách được hai yếu tố này.
+
+Adapter có khoảng 34.7 triệu tham số train được (khoảng 1.09 triệu mỗi layer), cỡ 10% model. Một seed nên mọi điều ở đây chỉ là đọc điểm kèm CI trong seed.
+
+**Giả thuyết run này kiểm:** H5 (PLAN §1), ở một seed; H1–H3 trên E3.
+- Phần "LoRA quên ít hơn" của H5: hiện chỉ có perplexity wikitext-2 và KL tới base ở snapshot cuối, mỗi thứ một con số, chưa có CI. ARC-Easy/HellaSwag (PLAN §3.3) chưa chạy cho run chính nào. Nên ở run này, phần quên chỉ là so điểm.
+- Phần "LoRA kém không quá 5 điểm": PLAN đọc nó theo trung bình 3 seed. Ở đây báo hiệu số ghép cặp `call_exact` E3 − E2 kèm CI.
+
+**Căn cứ:**
+- E2 seed 0: `call_exact` T-seen 0.66, T-unseen 0.80; `clarify_correct` 0.62; perplexity 14.12, KL 0.068. t_reach: `decision_bacc` 104k, format 200k, `call_exact` 402k, `clarify_correct` 3.2M.
+- Adapter gần 35 triệu tham số, lr 2e-4: đủ sức chứa cho một kỹ năng hẹp như định dạng gọi tool. Base và embedding đứng yên nên model ít lệch khỏi base hơn.
+- Chưa có pilot LoRA nào, và LoRA chưa từng chạy trên GPU. Nên các khoảng dưới đây rộng hơn ở E1.
+
+**Dự đoán** ("xuất hiện" là t_reach với θ chính, trên test, T-seen):
+1. **Thứ tự** như E2: `decision_bacc` và format sớm, rồi `call_exact`, `clarify_correct` muộn nhất. Mỗi mốc lệch E2 không quá một checkpoint, sớm hay muộn đều được (lr cao hơn bù cho việc ít tham số hơn).
+2. **H1:** đạt ở θ chính, không vững qua cả ba θ, như E1 và E2.
+3. **H2:** "`decision_bacc` muộn nhất" sai. "`false_call_rate` vượt base rồi giảm" đúng: đỉnh ≥ 0.2 ở 50k–400k (CI loại trừ 0), xuống < 0.05 ở cuối run.
+4. **H3:** `call_exact` T-unseen cao hơn base few-shot (CI loại trừ 0). Mức giảm ghép cặp khi đổi tên vô nghĩa nằm trong khoảng 5–15 điểm.
+5. **H5, khả năng (E3 − E2, ghép cặp, snapshot cuối):** `call_exact` T-seen của E3 trong khoảng 0.55–0.68. Hiệu số so với E2 trong khoảng −8 tới +2 điểm. Đoán điểm là −3, và cận dưới CI có thể vượt quá −5. `clarify_correct` thấp hơn E2 (−15 tới 0 điểm), vì đây là kỹ năng đến muộn nhất, cần học nhiều nhất.
+6. **H5, quên (so điểm):** perplexity wikitext-2 trong khoảng 13.3–13.9, thấp hơn E2 (14.12); KL tới base 0.02–0.05, thấp hơn E2 (0.068). `stop_rate` C ≥ 0.85.
+7. **Tài nguyên:** bộ nhớ GPU đỉnh thấp hơn E2 (11.1 GiB), tốc độ mỗi step trong khoảng ±20% so với E2 (9.2 giây/step trên Kaggle), vì vẫn phải lan truyền ngược qua toàn bộ base.
+
+**Kết quả coi là bất ngờ, phải kiểm hạ tầng trước khi đọc:**
+- Loss NaN hoặc `grad_norm` vọt lên (fp16 AMP với adapter, lr 2e-4).
+- Val loss tool ở step cuối cao hơn của E2 ở snapshot 400k.
+- Metric của snapshot đã merge khác hẳn đường val loss lúc train (lỗi merge).
+- `call_exact` T-seen cuối run < 0.4.
+- Perplexity cao hơn E2.
+- Số step hay token khác E2 (phải là 1250 step, 6 527 256 token assistant).
+
+**Chạy:** trên Kaggle, notebook `07_main`, cell 6 với `CONFIG, SEED = "e3_lora_r64", 0`. Ước tính khoảng 3 giờ train cộng khoảng 2.7 giờ chấm 10 snapshot, tức khoảng 6 giờ, trong giới hạn 12 giờ của phiên. Hạn mức tuần đang dùng khoảng 15/30 giờ. Giữ tab Colab nối runtime suốt run (CLAUDE.md).
