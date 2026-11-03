@@ -780,3 +780,34 @@ KL tới base: E2 − E3 +0.025 [+0.024, +0.026] nat/token; E1 − E2 −0.0004 
 - **Định dạng đến gần như tức thì:** ở +25k, hầu hết prompt cần tool đã có JSON đúng định dạng, không có pha nửa văn xuôi. Phần đến chậm là hành vi: khi nào gọi, khi nào hỏi lại, giá trị tham số.
 
 **Ghi chú đầy đủ** của ba lần đọc nằm ngoài repo (scratchpad của session 2026-10-29), không commit vì trích nguyên văn output; các điểm dùng ở đây đã được kiểm lại.
+
+## 2026-11-03 — Giả thuyết cho E2 seed 1 (ghi trước khi chạy)
+
+**Run:** `configs/e2_mix.yaml`, seed 1. Dữ liệu, siêu tham số, lịch lr và lịch snapshot y như E2 seed 0. Seed chỉ đổi thứ tự mẫu (`build_order`, `data_seed`): full fine-tune không có tham số khởi tạo ngẫu nhiên, và SmolLM2 không dùng dropout. Vẫn là 1250 step và 6 527 256 token assistant, vì 20 000 mẫu × 2 epoch chia hết cho batch 32, nên không mẫu nào bị bỏ. Snapshot lấy theo mốc token, nên có thể rơi vào step hơi khác seed 0.
+
+**Vì sao chạy run này trước:** E2 là mốc so của cả E1 − E2 (thứ tự dữ liệu) và E3 − E2 (H5). Seed 1 của E2 cho ước lượng đầu tiên về biến thiên do seed (PLAN §3.5, nguồn bất định (b)). Với hai seed mới chỉ có khoảng chênh, chưa có độ lệch chuẩn; độ lệch chuẩn cần seed 2.
+
+**Giả thuyết run này kiểm:** H1–H3 ở seed thứ hai của E2. Run này cũng kiểm xem các số đo của seed 0 có tái lập không. H5 và câu hỏi về thứ tự dữ liệu chỉ được đọc lại khi có E1 và E3 seed 1.
+
+**So với seed 0:** `python -m src.eval.stats --split test --baseline e0_test/base-zero-shot --compare e2_mix_s1 e2_mix_s0`. Hai seed được ghép theo prompt ở các mốc token chung. CI của phép so này chỉ phản ánh bất định do tập prompt, không phải biến thiên do seed, nên chỉ dùng để mô tả.
+
+**Căn cứ:** E2 seed 0 (mục "Kết quả E2 seed 0" và "hiệu số ghép cặp T-rename − T-seen"). E3 r64 seed 0 học đúng thứ tự mẫu của E2 seed 0, khác lr và cách train, nhưng ở cuối run hầu hết hiệu số so với E2 vẫn dưới 3 điểm. Do đó, một thay đổi nhỏ hơn, chỉ là thứ tự mẫu, nhiều khả năng cũng không làm lệch nhiều.
+
+**Dự đoán** ("xuất hiện" là t_reach với θ chính, trên test, T-seen; "cuối" là step cuối):
+1. **Thứ tự** như seed 0: `decision_bacc` sớm nhất (100k–200k); format, stop, `tool_name_acc`, `grounded_correct` ở 200k; `call_exact` ở 400k; `clarify_correct` muộn nhất (1.6M–6.4M). Mỗi mốc lệch seed 0 không quá một checkpoint.
+2. **H1:** đạt ở θ chính nhưng không vững qua ba θ, như seed 0: ở θ 0.3, `call_exact` đạt cùng mốc với format.
+3. **H2:** "`decision_bacc` muộn nhất" sai. "`false_call_rate` vượt base rồi giảm" đúng: đỉnh trong khoảng 0.25–0.50 ở 50k–400k (CI loại trừ 0), xuống < 0.05 ở cuối.
+4. **H3:** `call_exact` T-unseen cao hơn base few-shot (CI loại trừ 0). Mức giảm ghép cặp khi đổi sang tên vô nghĩa ở cuối nằm trong 5–13 điểm, cận trên CI < 20; mức giảm với tên đồng nghĩa < 5 điểm.
+5. **Khả năng ở cuối:** `call_exact` T-seen 0.62–0.70, T-unseen 0.75–0.85; `decision_bacc` ≥ 0.98; `grounded_correct` ≥ 0.93. `clarify_correct` T-seen 0.50–0.72: khoảng này rộng vì CI của seed 0 đã rộng [0.49, 0.73]. Hiệu số ghép cặp s1 − s0 dưới 4 điểm ở mọi metric gọi tool; với `clarify_correct`, CI chứa 0.
+6. **Quên:** perplexity wikitext-2 13.9–14.4 (seed 0: 14.12; E3: 13.63), tức vẫn cao hơn E3 seed 0. KL tới base 0.055–0.08. ARC-Easy/HellaSwag lệch base trong ±2 điểm, CI chứa 0. `stop_rate` C ≥ 0.88.
+7. **Tài nguyên:** khoảng 9.2 giây/step, GPU đỉnh khoảng 11.1 GiB như seed 0.
+
+**Kết quả coi là bất ngờ, phải kiểm hạ tầng trước khi đọc:**
+- Số step khác 1250 hoặc tổng token khác 6 527 256.
+- Thứ tự mẫu trùng seed 0 (seed không được truyền vào).
+- Loss NaN.
+- Một metric đã đạt θ rồi rơi về gần 0.
+- `call_exact` T-seen cuối < 0.55.
+- Perplexity > 14.6 hoặc < 13.5.
+
+**Chạy:** trên Kaggle, notebook `07_main`, cell 6 với `CONFIG, SEED = "e2_mix", 1`. Trước khi chạy, cập nhật bản trên Drive (cell cài thư viện, cell nạp source, cell 6) theo notebook trong repo rồi so SHA-256 của bundle. Ước tính khoảng 6.5 giờ (train khoảng 3.2 giờ, chấm 10 snapshot khoảng 2.7 giờ, thêm benchmark và perplexity), trong giới hạn 12 giờ của phiên. Giữ tab Colab nối runtime suốt run (CLAUDE.md).
