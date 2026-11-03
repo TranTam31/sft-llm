@@ -811,3 +811,65 @@ KL tới base: E2 − E3 +0.025 [+0.024, +0.026] nat/token; E1 − E2 −0.0004 
 - Perplexity > 14.6 hoặc < 13.5.
 
 **Chạy:** trên Kaggle, notebook `07_main`, cell 6 với `CONFIG, SEED = "e2_mix", 1`. Trước khi chạy, cập nhật bản trên Drive (cell cài thư viện, cell nạp source, cell 6) theo notebook trong repo rồi so SHA-256 của bundle. Ước tính khoảng 6.5 giờ (train khoảng 3.2 giờ, chấm 10 snapshot khoảng 2.7 giờ, thêm benchmark và perplexity), trong giới hạn 12 giờ của phiên. Giữ tab Colab nối runtime suốt run (CLAUDE.md).
+
+## 2026-11-03 — Kết quả E2 seed 1 (test)
+
+**Chạy:** `configs/e2_mix.yaml`, seed 1, notebook `07_main` trên Kaggle (Colab nối vào Kaggle Jupyter Server, T4, một GPU). Bundle `0ff9aeff…` (commit `2351ab5`), trùng với repo. Trước khi chạy: 212 test qua; `src.eval.manifest` khớp 11 file; hash D_chat và D_tool khớp Khóa giao thức. Run chạy một mạch, không bị ngắt, không phải resume.
+- Train: 1250 step, 6 527 256 token assistant, khớp số tính trước. Thứ tự mẫu khác seed 0, nên snapshot rơi vào step 5, 11, 21, 41, 79, 156, 308, 614, 1227, 1250 (seed 0: 5, 9, 19, 38, 77, 155, 307, 614, 1226, 1250). Không lần đẩy checkpoint nào lỗi; `train_loss` 0.699, không có NaN.
+- Khoảng 8.1 giây/step (seed 0: 9.2), GPU đỉnh 11.08 GiB. Train mất 3.0 giờ, chấm test khoảng 15 phút mỗi snapshot; cả run khoảng 5.5 giờ.
+- Trọng số: `trantam31/smollm2-360m-e2-mix-s1`. Output và metric: repo kết quả, thư mục `e2_mix_s1/` (private).
+
+**Snapshot cuối (step 1250), test, CI bootstrap 95% theo cụm; số trong ngoặc tròn là của seed 0:**
+
+| | T-seen | T-unseen |
+|---|---|---|
+| `format_valid` | 0.99 [0.98, 1.00] (1.00) | 0.98 (0.97) |
+| `call_exact` | 0.67 [0.61, 0.72] (0.66) | 0.81 [0.76, 0.87] (0.80) |
+| `call_exact` T-rename vô nghĩa / đồng nghĩa | 0.58 / 0.65 (0.57 / 0.64) | |
+| `decision_bacc` | 0.995 [0.98, 1.00] (0.995) | 0.997 (0.993) |
+| `false_call_rate` | 0.01 [0.00, 0.03] (0.01) | 0.00 (0.00) |
+| `clarify_correct` | 0.61 [0.48, 0.72] (0.62) | 0.58 [0.35, 0.83] (0.61) |
+| `grounded_correct` | 0.95 [0.91, 1.00] (0.97) | 0.97 (0.95) |
+| `stop_rate` C | 0.96 [0.92, 0.99] (0.93) | |
+
+**t_reach (θ chính, T-seen; token assistant):** `stop_rate`, `format_valid`, `tool_name_acc`, `grounded_correct`, `decision_bacc` 204k → `call_exact` 401k → `clarify_correct` 6.4M. T-unseen giống vậy, trừ `call_exact` đạt từ 204k. `clarify_correct` đạt 0.5 ở 6.4M (0.61) nhưng `stats.py` ghi "unconfirmed", vì quy tắc cần điểm giữ trên θ thêm hai checkpoint sau đó mà chỉ còn snapshot cuối. Ở 3.2M nó là 0.46 (seed 0: 0.56).
+
+**Theo checkpoint (T-seen; mốc 25k, 50k, 100k, 200k, 400k, 800k, 1.6M, 3.2M, 6.4M, cuối):**
+- `false_call_rate`: 0, 0, **0.60 [0.50, 0.69]**, 0.29, 0.25, 0.21, 0.02, 0.00, 0.01, 0.01. Seed 0: đỉnh 0.38 cũng ở 100k.
+- `call_exact`: 0, 0, 0.00, 0.46, 0.56, 0.57, 0.59, 0.65, 0.67, 0.67. Seed 0: 0, 0, 0.02, 0.37, 0.55, 0.58, 0.62, 0.66, 0.66, 0.66.
+- `clarify_correct`: 0, 0, 0, 0.17, 0.09, 0.42, 0.43, 0.46, 0.61, 0.61. Có một lần giảm 0.17 → 0.09 ở 400k, CI chồng nhau.
+
+**Hiệu số ghép cặp s1 − s0** (`--compare e2_mix_s1 e2_mix_s0`, ghép theo prompt ở cùng mốc token; CI chỉ phản ánh bất định do tập prompt, không phải do seed):
+- Cuối run, mọi metric gọi tool chênh dưới 2 điểm: `call_exact` T-seen +0.7 [−1.6, +3.1], T-unseen +1.0 [−0.7, +2.9]; `tool_name_acc` T-unseen +1.3 [+0.3, +2.8]. `clarify_correct` T-seen −1.0 [−4.4, +2.1], T-unseen −3.0 [−6.3, 0.0]. `grounded_correct` T-seen −2.0 [−5.0, 0.0], T-unseen +2.0 [0.0, +6.2]. `stop_rate` C +2.7 [−2.1, +7.6].
+- **Đầu run thì chênh lớn.** Ở 100k, seed 1 gọi tool thừa nhiều hơn (`false_call_rate` +22 điểm [+14, +30]) và phân biệt có/không cần tool kém hơn (`decision_bacc` −7.5 [−12.0, −3.3]). Ở 200k nó lại đi trước: `tool_name_acc` +11 điểm, `call_exact` +8.7 [+4.7, +12.7]. Từ 400k, các hiệu số về dưới 5 điểm.
+
+**H3, hiệu số ghép cặp T-rename − T-seen (`call_exact`, ba nhóm gộp):**
+- Vô nghĩa, cuối run: giảm 8.7 điểm [3.5, 13.7] (seed 0: 9.0 [4.5, 13.8]). Theo checkpoint từ 200k: 8.3, 10.0, 6.7, 7.0, 9.0, 8.7, 8.7. Cận trên CI cao nhất 14.4, luôn dưới 20.
+- Đồng nghĩa, cuối run: giảm 2.3 điểm [−1.0, 5.9]. Riêng ở 200k giảm 5.0 [1.6, 8.7]; từ 400k CI luôn chứa 0.
+
+**Quên (snapshot cuối):**
+- Perplexity wikitext-2 14.12 (seed 0: 14.12). Hiệu số s1 − s0 là −0.001 [−0.017, +0.015]. s1 − base là +1.11 [+1.02, +1.24]. s1 − E3 r64 s0 là +0.49 [+0.45, +0.56], gần như trùng với E2 s0 − E3 s0 (+0.50).
+- KL tới base 0.069 (seed 0: 0.068).
+- ARC-Easy acc / acc_norm 0.708 / 0.664; HellaSwag 0.444 / 0.572. So với base, ba ô có CI chứa 0. Riêng HellaSwag acc_norm cao hơn base 2.4 điểm [+0.6, +4.4], và cao hơn seed 0 1.6 điểm [+0.4, +2.8].
+
+**Đối chiếu với dự đoán ghi trước khi chạy:**
+1. **Thứ tự:** đúng phần lớn. Format, stop, `tool_name_acc`, `grounded_correct` ở 200k; `call_exact` ở 400k; `clarify_correct` muộn nhất (6.4M). Mỗi mốc lệch seed 0 không quá một checkpoint. Khác dự đoán: `decision_bacc` không đến sớm nhất mà cùng mốc 200k với format. Ở 100k nó là 0.70, ngay dưới θ 0.75, trong khi seed 0 đã là 0.77.
+2. **H1:** đúng như dự đoán. Đạt ở θ chính (format 204k, `call_exact` 401k, cách một checkpoint) nhưng không vững: ở θ 0.3, `call_exact` đạt cùng mốc với format; trên T-unseen thì đạt cùng mốc ngay ở θ chính.
+3. **H2:**
+   - "`decision_bacc` muộn nhất": sai, như dự đoán.
+   - "`false_call_rate` vượt base rồi giảm": đúng hình dạng. Đỉnh ở 100k, CI loại trừ 0, cuối run 0.01.
+   - Độ cao đỉnh **sai dự đoán**: 0.60, trên khoảng 0.25–0.50. Đỉnh này nằm giữa seed 0 (0.38) và pilot (0.67–0.70), nên độ cao đỉnh phụ thuộc thứ tự mẫu nhiều hơn tôi nghĩ.
+4. **H3:** đúng dự đoán. Base few-shot ở `call_exact` T-unseen là 0, nên vế "cao hơn base" là hiển nhiên. Mức giảm với tên vô nghĩa 8.7 điểm, nằm trong 5–13, cận trên 13.7 < 20; mức giảm với tên đồng nghĩa 2.3 < 5. Tiêu chí H3 (giảm ≤ 10 điểm, cận trên < 20) đạt ở cả hai seed.
+5. **Khả năng ở cuối:** cả năm khoảng dự đoán đều đúng. Hiệu số s1 − s0 dưới 4 điểm ở mọi metric gọi tool; `clarify_correct` có CI chứa 0.
+6. **Quên:**
+   - Đúng: perplexity 14.12 (khoảng 13.9–14.4, vẫn cao hơn E3), KL 0.069, `stop_rate` C 0.96.
+   - Sai một ô: HellaSwag acc_norm cao hơn base 2.4 điểm, CI loại trừ 0, trong khi dự đoán là lệch trong ±2 và CI chứa 0. Hướng lệch là tốt lên chứ không phải quên. Ba ô còn lại khớp dự đoán.
+7. **Tài nguyên:** GPU 11.08 GiB khớp; tốc độ nhanh hơn dự đoán (8.1 so với 9.2 giây/step). Có thể do máy Kaggle khác, vì cấu hình không đổi.
+- Không có kết quả "bất ngờ" nào trong danh sách đã ghi.
+
+**Đọc (hai seed của E2):**
+- Ở cuối run, kết quả tái lập tốt: mọi metric chính lệch dưới 3 điểm, perplexity trùng tới hai chữ số thập phân. Biến thiên do thứ tự mẫu ở snapshot cuối nhỏ hơn CI do tập prompt.
+- Ở giai đoạn đầu (100k–200k), thứ tự mẫu làm lệch tới 10–20 điểm ở cùng mốc token. Đây cũng là giai đoạn t_reach được đo. Vì vậy, hiệu số giữa các run ở các mốc đầu, như E3 chậm hơn E2 ở 100k–400k, cần đối chiếu với độ lệch này trước khi đọc là do cấu hình. Muốn có độ lệch chuẩn thì cần seed 2.
+- Thứ tự mẫu không làm đổi thứ tự xuất hiện của các kỹ năng; chỉ dịch mốc tối đa một checkpoint.
+
+**Việc còn lại:** bộ P của seed 1 (chưa đọc). E1 và E3 seed 1 để đọc lại H5 và câu hỏi về thứ tự dữ liệu.
