@@ -873,3 +873,47 @@ KL tới base: E2 − E3 +0.025 [+0.024, +0.026] nat/token; E1 − E2 −0.0004 
 - Thứ tự mẫu không làm đổi thứ tự xuất hiện của các kỹ năng; chỉ dịch mốc tối đa một checkpoint.
 
 **Việc còn lại:** bộ P của seed 1 (chưa đọc). E1 và E3 seed 1 để đọc lại H5 và câu hỏi về thứ tự dữ liệu.
+
+## 2026-11-03 — Giả thuyết cho E3 LoRA r64 seed 1 (ghi trước khi chạy)
+
+**Run:** `configs/e3_lora_r64.yaml`, seed 1. Cấu hình y như E3 seed 0: LoRA r 64, alpha 128, lr 2e-4, cùng dữ liệu, lịch lr và lịch snapshot. Thứ tự mẫu chỉ phụ thuộc seed, nên E3 seed 1 học đúng thứ tự của E2 seed 1, và snapshot phải rơi vào cùng step (5, 11, 21, 41, 79, 156, 308, 614, 1227, 1250). Vì vậy E3 − E2 được ghép cặp ở cả 10 snapshot của seed 1, như ở seed 0.
+
+**Vì sao chạy run này:**
+- E3 − E2 seed 1 là lần lặp đầu tiên của phép so H5.
+- Nó cũng kiểm xem E3 có chậm hơn E2 ở 200k–400k như seed 0 không. Kết quả E2 seed 1 cho thấy chỉ riêng thứ tự mẫu đã làm lệch 10–20 điểm ở 100k–200k. Vì vậy cần một seed nữa, với thứ tự mẫu khác, mới đọc được độ chậm đó là do LoRA (cộng lr) hay do thứ tự mẫu.
+
+**Giả thuyết run này kiểm:** H5 ở seed thứ hai; H1–H3 trên E3.
+
+**So sánh:**
+- `python -m src.eval.stats --split test --baseline e0_test/base-zero-shot --compare e3_lora_r64_s1 e2_mix_s1`: H5, ghép cặp theo prompt và cùng step.
+- `--compare e3_lora_r64_s1 e3_lora_r64_s0`: mô tả, như s1 − s0 của E2.
+- Quên: `src.eval.knowledge --compare` và `src.eval.benchmarks --compare` giữa E3 s1 và E2 s1.
+
+**Căn cứ:**
+- E3 seed 0: ở 200k, `format_valid` −16 điểm và `call_exact` −15 điểm so với E2; từ 800k các hiệu số dưới 3 điểm. Cuối run, `call_exact` −2.3 [−4.9, 0.0]; perplexity 13.63, thấp hơn E2 0.50 [0.45, 0.56].
+- E2 seed 1: `call_exact` 0.67 / 0.81; đỉnh `false_call_rate` 0.60 ở 100k; perplexity 14.12; s1 − s0 dưới 2 điểm ở cuối run.
+- Cơ chế đoán cho việc E3 chậm ở đầu: adapter khởi tạo B = 0, nên ở những step đầu thay đổi của model nhỏ hơn full fine-tune, kể cả với lr cao hơn. Cơ chế này không phụ thuộc thứ tự mẫu, nên tôi đoán độ chậm sẽ lặp lại.
+
+**Dự đoán** ("xuất hiện" là t_reach với θ chính, trên test, T-seen; hiệu số là E3 s1 − E2 s1, ghép cặp):
+1. **Độ chậm ở đầu lặp lại:** ở mốc 200k, `call_exact` và `format_valid` thấp hơn E2 s1 từ 5 tới 25 điểm, CI loại trừ 0. Từ 800k, các hiệu số này dưới 4 điểm.
+2. **Thứ tự** như E2 và E3 seed 0. Mỗi mốc bằng hoặc muộn hơn E2 s1 tối đa một checkpoint, không mốc nào sớm hơn.
+3. **H1:** đạt ở θ chính. Vững qua ba θ như E3 seed 0. Kém chắc hơn các dự đoán khác: ở seed 0, H1 vững chỉ vì `call_exact` đến chậm.
+4. **H2:**
+   - "`decision_bacc` muộn nhất": sai.
+   - "`false_call_rate` vượt base rồi giảm": đúng. Đỉnh trong khoảng 0.25–0.65 ở 100k–400k, CI loại trừ 0; cuối run < 0.05.
+5. **H3:** mức giảm ghép cặp khi đổi sang tên vô nghĩa ở cuối nằm trong 5–13 điểm, cận trên CI < 20. Mức giảm với tên đồng nghĩa < 5 điểm.
+6. **H5, khả năng (cuối run):** `call_exact` T-seen 0.60–0.69, T-unseen 0.75–0.86. Hiệu số `call_exact` T-seen trong khoảng −6 tới +2 điểm (đoán điểm −2). `clarify_correct` có CI chứa 0.
+7. **H5, quên:**
+   - Perplexity wikitext-2 13.4–13.9, thấp hơn E2 s1 từ 0.3 tới 0.7, CI loại trừ 0.
+   - KL tới base 0.035–0.05.
+   - ARC-Easy/HellaSwag lệch E2 s1 dưới 2 điểm, CI chứa 0.
+   - `stop_rate` C ≥ 0.85.
+8. **Tài nguyên:** GPU đỉnh khoảng 8.8 GiB. Tốc độ khoảng 9.5–11 giây/step: chậm hơn E2 s1 (8.1) khoảng 17% như ở seed 0.
+
+**Kết quả coi là bất ngờ, phải kiểm hạ tầng trước khi đọc:**
+- Số step khác 1250, tổng token khác 6 527 256, hoặc số token ở từng snapshot không khớp E2 s1 (thứ tự mẫu không khớp).
+- Loss NaN, hoặc `grad_norm` vọt lên.
+- `call_exact` T-seen cuối < 0.5.
+- Perplexity cao hơn E2 s1 hoặc thấp hơn 13.2.
+
+**Chạy:** trên Kaggle, notebook `07_main`, cell 6 với `CONFIG, SEED = "e3_lora_r64", 1`. Ước tính khoảng 3.5–4 giờ train và khoảng 2.7 giờ chấm, tổng khoảng 6.5–7 giờ, trong giới hạn 12 giờ của phiên. Kiểm hạn mức GPU tuần trên Kaggle trước khi bật phiên. Giữ tab Colab nối runtime suốt run.
