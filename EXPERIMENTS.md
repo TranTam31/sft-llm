@@ -1060,3 +1060,76 @@ KL tới base: E2 − E3 +0.025 [+0.024, +0.026] nat/token; E1 − E2 −0.0004 
 
 **Chạy:** trên Kaggle, notebook `07_main`, cell 6 với `CONFIG, SEED = "e1_seq", 1`. Tổng khoảng 8 giờ, trong giới hạn 12 giờ của phiên. Kiểm hạn mức GPU tuần trên Kaggle trước khi bật phiên: tuần này đã dùng khoảng 13 giờ, nên còn đủ. Giữ tab Colab nối runtime suốt run.
 
+## 2026-11-04 — Kết quả E1 seed 1 (test)
+
+**Chạy:** `configs/e1_seq.yaml`, seed 1, notebook `07_main` trên Kaggle (Colab nối vào Kaggle Jupyter Server, T4, một GPU). Bundle `0ff9aeff…`, trùng với repo.
+- Train: 1250 step, 6 527 256 token assistant. Ranh giới ở step 625 (4 607 572 token, đúng như seed 0). `train_loss` 0.598; không có NaN; `grad_norm` lớn nhất 1.82. Loss giảm mạch lạc qua ranh giới (0.82 ở step 625 → 0.46 ở step 640), không vọt lên. Không lần đẩy checkpoint nào lỗi.
+- 8.0 giây/step, GPU đỉnh 11.09 GiB. Train mất 3.1 giờ, xong lúc 01:31.
+- **Phiên Kaggle bị hủy ("Cancelled") khoảng 04:50,** sau khoảng 8 giờ, khi đã chấm 13/18 snapshot. Tab Colab báo "Runtime disconnected"; không rõ nguyên nhân (tab Kaggle nằm ở trang settings, không mở trình soạn). Bật lại phiên, nối lại, chạy lại cell 1–5 rồi cell 6: nó bỏ qua train và các snapshot đã chấm, chấm nốt 5 snapshot cùng benchmark/knowledge trong khoảng 1 giờ 15 phút. Lần nối lại này, nút copy URL của Kaggle không đưa được gì vào clipboard (ba lần, có lẽ vì cửa sổ Chrome không có focus); người dùng phải tự dán.
+- Trọng số: `trantam31/smollm2-360m-e1-seq-s1`. Output và metric: repo kết quả, thư mục `e1_seq_s1/` (private).
+
+**Snapshot cuối (step 1250), test, CI bootstrap 95% theo cụm; số trong ngoặc tròn là E2 s1 / E1 s0:**
+
+| | T-seen | T-unseen |
+|---|---|---|
+| `format_valid` | 0.99 [0.98, 1.00] (0.99 / 1.00) | 0.97 (0.98 / 0.98) |
+| `call_exact` | 0.66 [0.60, 0.71] (0.67 / 0.65) | 0.81 (0.81 / 0.81) |
+| `decision_bacc` | 0.993 (0.995 / 0.993) | 0.993 |
+| `false_call_rate` | 0.01 [0.00, 0.03] (0.01 / 0.01) | 0.00 |
+| `clarify_correct` | 0.46 [0.32, 0.58] (0.61 / 0.50) | 0.49 (0.58 / 0.52) |
+| `grounded_correct` | 0.95 (0.95 / 0.94) | 0.96 |
+| `stop_rate` C | 0.96 [0.93, 0.99] (0.96 / 0.94) | |
+
+**Ranh giới (step 625, chỉ mới học chat):** `format_valid`, `call_exact`, `tool_name_acc`, `false_call_rate` đều bằng 0, CI so với base là [0, 0]; `decision_bacc` 0.50. `stop_rate` C 0.94 [0.90, 0.97], T-seen 0.575. `clarify_correct` 0.03. `grounded_correct` 0.27 [0.11, 0.50]; trong giai đoạn chat nó đi 0.26 → 0.46 → 0.20 → 0.29 → 0.08 → 0.27 (step 28 → 625), không đơn điệu, như seed 0.
+
+**Giai đoạn tool, theo token từ ranh giới (T-seen; mốc +28k, +52k, +103k, +201k, +401k, +800k, +1.6M, +1.79M, cuối):**
+- `false_call_rate`: **0.63**, 0.40, 0.24, 0.23, 0.18, 0.01, 0.01, 0.01, 0.01. Đỉnh ở +28k, cận dưới CI so với base +0.54 (seed 0: 0.64 ở +25k).
+- `format_valid`: 0.48, 0.92, 0.99, 0.98, 0.99, 0.98, 0.99, 0.99, 0.99. Seed 0 ở +25k đã 0.87.
+- `call_exact`: 0.15, 0.42, 0.53, 0.58, 0.59, 0.64, 0.65, 0.65, 0.66. Seed 0 ở +25k là 0.32.
+- `decision_bacc`: 0.69, 0.80, 0.88, 0.88, 0.91, 0.99, 0.99, 0.99, 0.99.
+- `clarify_correct`: 0.00, 0.01, 0.23, 0.38, 0.46, 0.44, 0.52, 0.46, 0.46.
+- `grounded_correct` nhảy từ 0.38 (+28k) lên 0.83 (+52k), rồi 0.88–0.95.
+- `stop_rate` C hụt xuống 0.83 ở +28k rồi về 0.93–0.97.
+
+**t_reach (θ chính, T-seen, token cộng dồn):** `format_valid`, `tool_name_acc`, `decision_bacc`, `grounded_correct` 4.66M (+52k) → `call_exact` 4.71M (+103k) → `clarify_correct` không đạt θ 0.5 (θ 0.3 ở +201k). Seed 0: `call_exact` và `decision_bacc` cùng ở +100k; `clarify_correct` "unconfirmed" ở snapshot cuối.
+
+**Bộ C, số output có `<tool_call>` trên 150 (đếm trên `outputs.jsonl`):** 0 ở mọi snapshot giai đoạn chat; **38** ở +28k, 19 ở +52k, 4 ở +103k, 3 ở +201k, 1 từ +401k tới cuối. Seed 0: 46, 45, 6, 3, rồi 1.
+
+**Thứ tự dữ liệu, hiệu số ghép cặp E1 s1 − E2 s1** (`--compare e1_seq_s1 e2_mix_s1`, cùng mốc token cộng dồn, cùng prompt):
+- **Cuối run, `clarify_correct` T-seen −15.0 điểm [−22.6, −8.6]; T-unseen −9.0 [−17.5, −3.0].** Ở 6.4M: −15.0 [−22.6, −8.6] và −10.0 [−17.9, −4.4]. Seed 0 (E1 s0 − E2 s0): −12.0 [−18.9, −6.2] và −9.0.
+- Các metric gọi tool khác bằng nhau: `call_exact` T-seen −1.3 [−3.1, +0.4], T-unseen −0.3 [−2.4, +1.5]; `decision_bacc` −0.2 / −0.3; `false_call_rate` 0.0 / 0.0.
+- Trước 6.4M, mọi hiệu số là "E1 chưa học tool" (vd. `call_exact` −45 tới −81 ở 200k–3.2M), không mang thông tin về thứ tự dữ liệu.
+
+**Hiệu số ghép cặp E1 s1 − E1 s0** (`--compare e1_seq_s1 e1_seq_s0`; chỉ để mô tả): cuối run mọi metric chênh dưới 4 điểm. `call_exact` T-seen +0.7 [−1.0, +2.3], T-unseen −0.7 [−2.4, +0.9]; `clarify_correct` T-seen −4.0 [−9.5, 0.0], T-unseen −3.0 [−9.5, +1.0]; `decision_bacc` và `false_call_rate` dưới 1 điểm.
+
+**H3, hiệu số ghép cặp T-rename − T-seen (`call_exact`, cuối run):** tên vô nghĩa giảm 10.0 điểm [5.3, 14.8] (E1 s0: 8.3; E2 s1: 8.7); tên đồng nghĩa giảm 2.3 [−1.0, 5.7].
+
+**Quên (snapshot cuối):**
+- Perplexity wikitext-2 14.10. So với E2 s1: −0.028 [−0.044, −0.011]. So với E1 s0: −0.007 [−0.017, +0.005]. So với base: +1.09 [+1.00, +1.20].
+- KL tới base 0.067 (E2 s1: 0.069; E1 s0: 0.067); E1 s1 − E2 s1 là −0.0016 [−0.0020, −0.0012].
+- ARC-Easy acc / acc_norm 0.706 / 0.672; HellaSwag 0.446 / 0.562. So với E2 s1: cả bốn ô CI chứa 0 (HellaSwag acc_norm −1.0 [−2.2, 0.0]). So với E1 s0: ARC-Easy acc_norm +0.8 [+0.2, +1.6], ba ô còn lại CI chứa 0. So với base: cả bốn ô CI chứa 0.
+
+**Đối chiếu với dự đoán ghi trước khi chạy:**
+1. **Ranh giới:** đúng cả bốn vế. Metric gọi tool bằng 0, CI so với base chứa 0; `decision_bacc` 0.50; `stop_rate` C 0.94, T-seen 0.575; `clarify_correct` 0.03; `grounded_correct` 0.27, dao động không đơn điệu.
+2. **Thứ tự giai đoạn tool:** đúng phần lớn.
+   - `format_valid` **không** đạt ở +25k: 0.48 ở +28k, sát dưới θ 0.5; đạt ở +52k. **Sai**, sát nút.
+   - `call_exact` ở +103k (mốc 100k của thang từ ranh giới), `decision_bacc` ở +52k: đúng.
+   - `clarify_correct` đến muộn nhất, không đạt θ chính: đúng.
+3. **H1:** đúng ở θ chính trên T-seen: format (+52k) trước `call_exact` (+103k) một checkpoint. Ở θ 0.3 cũng trước một checkpoint (+28k so với +52k); ở θ 0.7 `call_exact` T-seen không đạt. Trên T-unseen, ở θ 0.3 và θ chính hai mốc trùng nhau (+52k). Vậy "không vững qua θ" đúng nếu tính cả T-unseen; riêng T-seen thì vững hơn seed 0.
+4. **H2:** đúng. `decision_bacc` không muộn nhất. `false_call_rate` lên đỉnh 0.63 ở +28k, CI loại trừ 0; cuối run 0.01.
+5. **H3:** đúng. Tên vô nghĩa giảm 10.0, trong 5–13; cận trên 14.8 < 20. Tên đồng nghĩa 2.3 < 5 (cận trên 5.7).
+6. **Thứ tự dữ liệu:** đúng cả ba vế.
+   - **`clarify_correct` T-seen −15.0 [−22.6, −8.6], trong khoảng −6 tới −16, CI loại trừ 0.** T-unseen cùng hướng, và CI cũng loại trừ 0.
+   - Từ +800k tới cuối, `clarify_correct` T-seen của E1 đứng ở 0.44–0.52, trong khoảng 0.40–0.56.
+   - `call_exact` chênh trong ±4, CI chứa 0; `decision_bacc` và `false_call_rate` chênh dưới 2 điểm.
+7. **Chat bị kéo về định dạng tool:** đúng. 38/150 ở +28k (≥ 20); 1/150 từ +401k (≤ 3).
+8. **Quên:** đúng cả bốn vế. Perplexity 14.10, hiệu số với E2 s1 −0.03, trong ±0.1 (CI loại trừ 0 nhưng rất nhỏ); KL 0.067; ARC/HellaSwag lệch E2 s1 dưới 1 điểm; `stop_rate` C 0.96.
+9. **Tài nguyên:** 8.0 giây/step và 11.09 GiB, khớp. Tổng thời gian dài hơn dự đoán vì phiên bị hủy và phải nối lại.
+- Không có kết quả "bất ngờ" nào trong danh sách đã ghi.
+
+**Đọc (hai seed của E1, câu hỏi thứ tự dữ liệu ở hai seed):**
+- **Khoảng chênh `clarify_correct` của E1 so với E2 lặp lại qua seed:** −12.0 ở seed 0, −15.0 ở seed 1 (T-seen), CI của cả hai loại trừ 0; T-unseen −9.0 ở cả hai seed. Đây là hiệu ứng thứ tự dữ liệu duy nhất ở cuối run, và nó lớn hơn độ lệch do thứ tự mẫu (E1 s1 − E1 s0 chỉ −4.0 [−9.5, 0.0]). Học chat trước rồi mới học tool làm model hỏi lại kém hơn khi thiếu thông tin, dù cùng dữ liệu và cùng số token.
+- Mọi metric gọi tool khác ở cuối run không phụ thuộc thứ tự dữ liệu: `call_exact`, `decision_bacc`, `false_call_rate`, `grounded_correct` chênh dưới 2 điểm ở cả hai seed. Quên cũng vậy: perplexity và KL của E1 và E2 gần như trùng.
+- Diễn biến sau ranh giới lặp lại gần như y hệt seed 0: `false_call_rate` lên đỉnh khoảng 0.63 rồi về 0.01 trong khoảng 800k token; chat bị kéo về định dạng tool (38–46/150) rồi hồi lại trong khoảng 400k. Seed 1 học định dạng chậm hơn seed 0 một chút ở +25k.
+
+**Việc còn lại:** bộ P của E1 s1, E2 s1 và E3 s1 (chưa đọc). Các run seed 2 (E1, E2, E3 r64) và E3 r8 s0.
