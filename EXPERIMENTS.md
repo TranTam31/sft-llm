@@ -1161,3 +1161,47 @@ KL tới base: E2 − E3 +0.025 [+0.024, +0.026] nat/token; E1 − E2 −0.0004 
 - E2 và E3 seed 1 không có gì trên P trái với seed 0, ngoài thứ tự khác ở đầu run đã thấy trên test.
 
 **Việc còn lại:** các run seed 2 (E1, E2, E3 r64) và E3 r8 s0.
+
+## 2026-11-04 — Giả thuyết cho E3 LoRA r8 seed 0 (ghi trước khi chạy)
+
+**Run:** `configs/e3_lora_r8.yaml`, seed 0. Y như E3 r64 seed 0, chỉ khác rank: r 8, alpha 16 (vẫn alpha = 2r, nên hệ số scale alpha/r = 2 không đổi), dropout 0.05, cùng 7 module của 32 layer, lr 2e-4. Adapter khoảng 4.3 triệu tham số train được (1/8 của r64, khoảng 1.2% model). Thứ tự mẫu chỉ phụ thuộc seed, nên snapshot phải rơi vào cùng step với E2 s0 và E3 r64 s0 (5, 9, 19, 38, 77, 155, 307, 614, 1226, 1250), và r8 − r64 được ghép cặp ở cả 10 snapshot. PLAN chỉ chạy r8 ở một seed, nên mọi điều ở đây là đọc điểm kèm CI trong seed.
+
+**Vì sao chạy run này:** E3 r64 ở hai seed đạt `call_exact` như full fine-tune (chênh dưới 2.5 điểm) và quên ít hơn (perplexity thấp hơn khoảng 0.5). Câu hỏi còn lại của E3 (PLAN: r ∈ {8, 64}) là rank thấp tới đâu thì vẫn đủ: một adapter nhỏ hơn 8 lần có giữ được khả năng không, và có quên ít hơn nữa không.
+
+**Giả thuyết run này kiểm:** ảnh hưởng của rank lên khả năng và mức quên (mô tả, một seed); H1–H3 trên E3 r8. H5 của PLAN chỉ nói về r64, nên run này không xác nhận hay bác H5.
+
+**So sánh:**
+- `python -m src.eval.stats --split test --baseline e0_test/base-zero-shot --compare e3_lora_r8_s0 e3_lora_r64_s0`: ảnh hưởng của rank, ghép cặp theo prompt và cùng step.
+- `--compare e3_lora_r8_s0 e2_mix_s0`: so với full fine-tune.
+- Quên: `src.eval.knowledge --compare` và `src.eval.benchmarks --compare` giữa E3 r8 s0 với E3 r64 s0 và với E2 s0.
+
+**Căn cứ:**
+- E3 r64 s0: cuối run `call_exact` 0.64 / 0.81, `clarify_correct` 0.59, `stop_rate` C 0.89; perplexity 13.63, KL 0.043. Ở 200k chậm hơn E2 s0 15–16 điểm (`format_valid`, `call_exact`), từ 800k bắt kịp. t_reach: format 200k, `call_exact` 803k, `clarify_correct` 3.2M.
+- E3 r64 s1: cuối run `call_exact` 0.66 / 0.80, perplexity 13.64. Đầu run lệch nhiều theo thứ tự mẫu (s1 − s0 tới 32 điểm ở 100k), nên chỉ so r8 với r64 cùng seed 0.
+- Văn liệu (Hu và cs. 2021, LoRA; Biderman và cs. 2024, "LoRA Learns Less and Forgets Less"): rank thấp thường đủ cho tác vụ hẹp về định dạng, nhưng học ít hơn ở tác vụ cần nhiều thông tin mới; rank thấp hơn thì lệch khỏi base ít hơn.
+- Với alpha = 2r, độ lớn cập nhật ở mỗi hướng tương tự r64, nhưng số hướng ít hơn 8 lần. Gọi tool có cấu trúc lặp lại (định dạng, chọn tên), còn hỏi lại khi thiếu thông tin là kỹ năng đến muộn nhất và kém nhất ở mọi run.
+
+**Dự đoán** ("xuất hiện" là t_reach với θ chính, trên test, T-seen; hiệu số là r8 − r64, cùng seed 0, ghép cặp):
+1. **Khả năng, cuối run:**
+   - `call_exact` T-seen 0.55–0.67, T-unseen 0.72–0.84. Hiệu số so với r64 trong khoảng −8 tới +2 điểm (đoán điểm −3).
+   - `format_valid` ≥ 0.97 và `decision_bacc` ≥ 0.97: định dạng và quyết định gọi hay không không cần nhiều rank.
+   - `clarify_correct` thấp hơn r64 từ 0 tới 15 điểm (đoán điểm −6); CI có thể chứa 0.
+2. **Đầu run:** chậm hơn r64 hoặc bằng. Ở 200k, `format_valid` và `call_exact` thấp hơn r64 từ 0 tới 20 điểm. Từ 1.6M, hiệu số `call_exact` dưới 6 điểm.
+3. **Thứ tự** như E2 và E3 r64: format/decision → `call_exact` → `clarify_correct`. Mỗi mốc bằng hoặc muộn hơn r64 s0 tối đa một checkpoint.
+4. **H1:** đạt ở θ chính.
+5. **H2:** "`decision_bacc` muộn nhất": sai. "`false_call_rate` vượt base rồi giảm": đúng, đỉnh 0.25–0.65 ở 100k–800k, CI loại trừ 0; cuối run < 0.05.
+6. **H3:** mức giảm ghép cặp khi đổi sang tên vô nghĩa ở cuối nằm trong 4–15 điểm, cận trên CI < 20; với tên đồng nghĩa < 5.
+7. **Quên:**
+   - Perplexity wikitext-2 13.2–13.6, thấp hơn r64 s0 (13.63) từ 0 tới 0.4, CI loại trừ 0 (đoán điểm −0.15). Vẫn cao hơn base (13.01).
+   - KL tới base 0.02–0.04, thấp hơn r64 (0.043).
+   - ARC-Easy/HellaSwag lệch r64 s0 dưới 2 điểm.
+   - `stop_rate` C ≥ 0.85.
+8. **Tài nguyên:** GPU đỉnh 8–8.8 GiB (thấp hơn r64 một chút). Tốc độ 9.5–11.5 giây/step: thời gian chủ yếu là lan truyền qua base, nên gần r64. Train khoảng 3.5–4 giờ, chấm khoảng 10 × 15 phút; tổng khoảng 6–7 giờ.
+
+**Kết quả coi là bất ngờ, phải kiểm hạ tầng trước khi đọc:**
+- Số step khác 1250, tổng token khác 6 527 256, hoặc số token ở từng snapshot không khớp E3 r64 s0.
+- Số tham số train được khác khoảng 4.3 triệu (r hoặc module không như config).
+- Loss NaN, hoặc `grad_norm` vọt lên.
+- `call_exact` T-seen cuối < 0.45, hoặc perplexity cao hơn r64 s0.
+
+**Chạy:** trên Kaggle, notebook `07_main`, cell 6 với `CONFIG, SEED = "e3_lora_r8", 0`. Hạn mức tuần còn khoảng 8 giờ 20 phút (đã dùng 21 giờ 40 / 30), đủ cho khoảng 6–7 giờ nhưng ít dư; nếu hết hạn mức giữa chừng thì chạy nốt sau khi hạn mức đặt lại, cell 6 tự resume. Giữ tab Colab nối runtime suốt run.
