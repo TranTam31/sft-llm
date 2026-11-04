@@ -993,3 +993,70 @@ KL tới base: E2 − E3 +0.025 [+0.024, +0.026] nat/token; E1 − E2 −0.0004 
 - **Thứ tự xuất hiện của kỹ năng vững qua cả cấu hình lẫn seed:** format/stop/tool → `call_exact` → `clarify`. Các mốc dịch tối đa một checkpoint.
 
 **Việc còn lại:** bộ P của E2 s1 và E3 s1 (chưa đọc). E1 seed 1 cho câu hỏi về thứ tự dữ liệu. Seed 2 nếu muốn tách được độ lệch do thứ tự mẫu ở giai đoạn đầu.
+
+## 2026-11-03 — Giả thuyết cho E1 seed 1 (ghi trước khi chạy)
+
+**Run:** `configs/e1_seq.yaml`, seed 1. Cấu hình y như E1 seed 0: D_chat × 2 epoch (step 1–625), rồi D_tool × 2 epoch (step 626–1250), một lịch lr, optimizer liên tục. Seed chỉ đổi thứ tự mẫu trong mỗi giai đoạn, nên ranh giới vẫn ở step 625. Các snapshot khác có thể lệch vài step so với seed 0. Chấm test ở khoảng 18 snapshot, như seed 0: thang tích lũy, ranh giới, thang từ ranh giới, rồi 6.4M và step cuối.
+
+**Vì sao chạy run này:**
+- Ở seed 0, khác biệt rõ duy nhất do thứ tự dữ liệu là `clarify_correct`. E1 thấp hơn E2 9–14 điểm, CI loại trừ 0, ở cả 6.4M lẫn step cuối. Mọi metric gọi tool khác chênh dưới 2 điểm.
+- E2 và E3 seed 1 cho thấy thứ tự mẫu làm lệch tới 10–30 điểm ở các snapshot đầu, nhưng dưới khoảng 4 điểm ở snapshot cuối. Khoảng chênh `clarify_correct` của E1 nằm ở snapshot cuối, nên seed 1 là phép thử đầu tiên xem nó có giữ qua thứ tự mẫu khác không.
+- Run này cũng lặp lại các quan sát của seed 0 ở ranh giới và ngay sau đó, khi chat bị kéo về định dạng tool.
+
+**Giả thuyết run này kiểm:** câu hỏi về thứ tự dữ liệu (E1 − E2) ở seed thứ hai; H1–H3 trên E1.
+
+**So sánh:**
+- `python -m src.eval.stats --split test --baseline e0_test/base-zero-shot --compare e1_seq_s1 e2_mix_s1`: ghép theo prompt ở các mốc token cộng dồn chung và step cuối. Snapshot ranh giới và thang từ ranh giới không có cặp.
+- `--compare e1_seq_s1 e1_seq_s0`: mô tả, như s1 − s0 của E2 và E3. CI chỉ phản ánh bất định do tập prompt.
+- Quên: `src.eval.knowledge --compare` và `src.eval.benchmarks --compare` giữa E1 s1 và E2 s1, và giữa E1 s1 và E1 s0.
+
+**Căn cứ:**
+- E1 seed 0, ở ranh giới:
+  - mọi metric gọi tool bằng 0;
+  - `stop_rate` C 0.90, T-seen 0.49;
+  - `grounded_correct` 0.50, dao động trong giai đoạn chat (0.81 → 0.25 → 0.50) vì model chép lại tool call có trong ngữ cảnh.
+- E1 seed 0, giai đoạn tool, tính bằng token từ ranh giới:
+  - `format_valid` đạt ở 25k;
+  - `call_exact` và `decision_bacc` đạt ở 100k;
+  - `false_call_rate` lên đỉnh 0.64 ở 25k;
+  - `clarify_correct` đứng ở 0.45–0.51 từ 800k.
+- E1 seed 0, cuối run: `call_exact` 0.65 / 0.81; perplexity 14.10; KL 0.067. Ngay sau ranh giới, 46/150 output của bộ C có `<tool_call>` ở +25k và 45/150 ở +50k; từ +400k chỉ còn 1/150.
+- E2 seed 1, cuối run: `call_exact` 0.67 / 0.81; `clarify_correct` 0.61 / 0.58; perplexity 14.12.
+
+**Dự đoán** ("xuất hiện" là t_reach với θ chính, trên test, T-seen; "token từ ranh giới" là thang thứ hai):
+1. **Ranh giới (chỉ học chat):**
+   - `format_valid` và `call_exact` bằng 0, CI so với base chứa 0; `decision_bacc` ≈ 0.5.
+   - `stop_rate` C ≥ 0.85, `stop_rate` T-seen trong khoảng 0.35–0.65.
+   - `clarify_correct` ≤ 0.05.
+   - `grounded_correct` ở ranh giới thì khó đoán, trong khoảng 0.2–0.85. Nó dao động không đơn điệu qua các snapshot của giai đoạn chat, như seed 0.
+2. **Giai đoạn tool, thứ tự:**
+   - `format_valid` đạt ở 25k token từ ranh giới.
+   - `call_exact` ở 25k–100k; `decision_bacc` ở 50k–200k.
+   - `clarify_correct` đạt muộn nhất: từ 800k trở đi, hoặc chỉ ở snapshot cuối, hoặc không đạt.
+3. **H1:** đạt ở θ chính: `format_valid` trước `call_exact` ít nhất một checkpoint của thang thứ hai. Không vững qua ba θ, như seed 0.
+4. **H2:**
+   - "`decision_bacc` muộn nhất": sai.
+   - "`false_call_rate` vượt base rồi giảm": đúng. Đỉnh trong khoảng 0.40–0.80 ở 25k–50k token từ ranh giới, CI loại trừ 0; cuối run < 0.05.
+5. **H3:** mức giảm ghép cặp khi đổi sang tên vô nghĩa ở cuối nằm trong 5–13 điểm, cận trên CI < 20. Mức giảm với tên đồng nghĩa < 5.
+6. **Thứ tự dữ liệu, cuối run (E1 s1 − E2 s1, ghép cặp):**
+   - **`clarify_correct` T-seen thấp hơn từ 6 tới 16 điểm, CI loại trừ 0.** Đây là dự đoán chính của run. T-unseen cùng hướng, nhưng CI có thể chạm 0. Từ 800k token từ ranh giới tới cuối, `clarify_correct` T-seen của E1 đứng trong khoảng 0.40–0.56.
+   - `call_exact` T-seen và T-unseen chênh trong ±4 điểm, CI chứa 0. `decision_bacc` và `false_call_rate` chênh dưới 2 điểm.
+7. **Chat bị kéo về định dạng tool sau ranh giới**, đếm bằng script trên `outputs.jsonl` của bộ C:
+   - ≥ 20/150 output có `<tool_call>` ở +25k hoặc +50k;
+   - ≤ 3/150 từ +400k tới cuối.
+8. **Quên:**
+   - Perplexity wikitext-2 13.9–14.3; hiệu số so với E2 s1 trong ±0.1.
+   - KL tới base 0.06–0.075.
+   - ARC-Easy/HellaSwag lệch E2 s1 dưới 2 điểm.
+   - `stop_rate` C cuối run ≥ 0.88.
+9. **Tài nguyên:** khoảng 8–9 giây/step, GPU đỉnh khoảng 11 GiB. Train khoảng 3 giờ, chấm khoảng 18 × 15 phút; tổng khoảng 7.5–8.5 giờ.
+
+**Kết quả coi là bất ngờ, phải kiểm hạ tầng trước khi đọc:**
+- Ranh giới không ở step 625; tổng token khác 6 527 256.
+- `call_exact` > 0.05 ở ranh giới: kiểm D_chat có lẫn mẫu tool không, và kiểm `order.json`.
+- Mọi metric kỹ năng rơi về gần 0 ngay sau ranh giới.
+- Loss NaN, hoặc `grad_norm` vọt lên.
+- `call_exact` T-seen cuối < 0.5, hoặc `stop_rate` C cuối < 0.5.
+
+**Chạy:** trên Kaggle, notebook `07_main`, cell 6 với `CONFIG, SEED = "e1_seq", 1`. Tổng khoảng 8 giờ, trong giới hạn 12 giờ của phiên. Kiểm hạn mức GPU tuần trên Kaggle trước khi bật phiên: tuần này đã dùng khoảng 13 giờ, nên còn đủ. Giữ tab Colab nối runtime suốt run.
+
