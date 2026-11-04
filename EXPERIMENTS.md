@@ -1133,3 +1133,31 @@ KL tới base: E2 − E3 +0.025 [+0.024, +0.026] nat/token; E1 − E2 −0.0004 
 - Diễn biến sau ranh giới lặp lại gần như y hệt seed 0: `false_call_rate` lên đỉnh khoảng 0.63 rồi về 0.01 trong khoảng 800k token; chat bị kéo về định dạng tool (38–46/150) rồi hồi lại trong khoảng 400k. Seed 1 học định dạng chậm hơn seed 0 một chút ở +25k.
 
 **Việc còn lại:** bộ P của E1 s1, E2 s1 và E3 s1 (chưa đọc). Các run seed 2 (E1, E2, E3 r64) và E3 r8 s0.
+
+## 2026-11-04 — Bộ P qua các checkpoint: E1, E2, E3 seed 1
+
+**Loại hoạt động:** đếm bằng script và đọc output bộ P (60 prompt) ở mọi snapshot của E1 s1, E2 s1, E3 r64 s1, đặt cạnh seed 0. Không sinh lại. Mục đích là xem các nhận xét ở mục "Bộ P qua các checkpoint: E1, E2, E3 seed 0" có lặp lại ở seed thứ hai không. Bộ P nhỏ (mỗi nhóm 6–10 prompt), nên đây là mô tả, không phải số đo. Không trích nguyên văn output dài.
+
+**Snapshot cuối, theo prompt (E1 s0 / E1 s1 / E2 s1 / E3 s1):**
+- **Chat và kiến thức hỏng ở E1, cùng prompt qua hai seed.** E1 s1 hỏng 5/20, E1 s0 6/20; E2 s1 và E3 s1 trả lời bình thường cả 20, như seed 0. Năm prompt hỏng ở E1 s1 đều nằm trong sáu prompt hỏng ở E1 s0:
+  - `chat:02` (mẹo ngủ) và `chat:08` (ưu/nhược điểm làm việc ở nhà) thành tool call ở cả hai seed. Dạng khác nhau: seed 0 là chuỗi trơn trong thẻ (`<tool_call>"sleep_tips"</tool_call>`); seed 1 là một thẻ bịa `<tool_call_args>` bọc JSON nội dung câu trả lời.
+  - `chat:09` (bài tập buổi sáng) hỏi ngược lại thay vì trả lời, ở cả hai seed.
+  - `knowledge:03` (Pride and Prejudice) và `knowledge:07` (năm Thế chiến II kết thúc) bị từ chối bằng câu cố định của dữ liệu ("None of the tools I have can help…"), ở cả hai seed.
+  - Riêng seed 0 còn `knowledge:08` (ký hiệu hóa học của vàng) thành tool call; seed 1 trả lời đúng "Au".
+- **Câu từ chối cố định bị dùng thừa ở E1, không ở E2/E3.** Đếm trên cả 60 prompt: E1 dùng câu này ở 4 prompt, cùng 4 prompt ở hai seed (`knowledge:03`, `knowledge:07`, `select:03`, `no_tool:07`). E2 và E3, cả hai seed, chỉ dùng ở `no_tool:07` (giá vé máy bay, không có tool phù hợp), là chỗ duy nhất từ chối là đúng. `select:03` ("Where can I watch Dune: Part Two in Chicago?") có tool tìm suất chiếu; E1 từ chối, còn E2 s1 gọi nhầm `get_weather`.
+- **Hỏi lại khi thiếu thông tin vẫn yếu nhất, và chỉ ở prompt email/SMS:** E1 s1 hỏi lại 1/6 (`missing_info:04`, email chủ nhà), E1 s0 2/6, E2 s1 1/6, E3 s1 2/6 (`04` và `06`, SMS). Bốn prompt còn lại vẫn điền mặc định rồi gọi ở mọi run: "New York", USD→CAD hoặc EUR, `bill_amount: 100`, "+1234567890". Lặp lại seed 0.
+- **Lỗi chọn tool ổn định:** `select:05` (nhắn tin tới số điện thoại) gọi `send_email` ở cả ba run seed 1, như seed 0.
+- **Gọi tool thừa:** `no_tool:06` (nghĩa của "déjà vu") gọi `translate_text` ở cả ba run seed 1 ở snapshot cuối; ở seed 0 thì E2 và E3 đã thôi gọi. E1 s1 còn gọi `get_match_schedule` cho câu hỏi công thức món chay (`no_tool:01`).
+
+**Theo checkpoint:**
+- **E1, giai đoạn chat:** không có `<tool_call>` nào ở các nhóm cần tool, No-tool và Missing-info. Ở step 435 và 625, không có câu từ chối nào và 2–3/34 output của các nhóm này dạng code. Ở Multi-turn, model chép lại tool call có sẵn trong ngữ cảnh không đơn điệu (6, 5, 4, 0, 0, 1, 1, 5, 4 trên 6 từ step 3 tới ranh giới), như seed 0 (1/6 ở ranh giới).
+- **E1, ngay sau ranh giới:** 17/20 prompt chat/kiến thức có `<tool_call>` ở +28k, 16 trong đó là chuỗi trơn. Nhưng ở +52k chỉ còn 6/20, rồi 5–6 tới +201k, 2 từ +401k. Seed 0 là 15 ở +25k, **17** ở +50k, 7 ở +100k. Seed 1 hồi phục sớm hơn một snapshot, khớp với bộ C của test (38 → 19/150 so với 46 → 45/150 ở seed 0).
+- **E2 s1 và E3 s1, đầu run:** ở step 21 (khoảng 100k), E2 s1 có `<tool_call>` ở 21/21 prompt cần tool nhưng 8/20 prompt chat; E3 s1 13/21 cần tool, 0/20 chat, và chưa dừng ở output nào (0/60 `<|im_end|>`, E2 s1 9/60). Ở seed 0, E3 chỉ có 3/21 ở step 19. Khớp với hiệu số trên test: ở seed 1, E3 đi trước E2 về định dạng ở 100k nhưng chưa biết dừng. Từ step 41, cả hai dừng ở 56/60 output; ở seed 0, E3 chậm hơn ở mốc này (43/60 so với 59/60).
+
+**Đọc:**
+- Các nhận xét về E1 ở seed 0 lặp lại gần như theo từng prompt. Học chat trước, tool sau để lại ở cuối run một dấu vết trên chat ngắn mang tính tra cứu, và dấu vết đó rơi đúng vào cùng các prompt qua hai thứ tự mẫu. Vậy nó phụ thuộc vào prompt, không phải nhiễu của một seed.
+- Một dấu vết mới so với mục seed 0: E1 dùng thừa câu từ chối cố định, ở cùng 3 prompt qua hai seed, còn E2/E3 không bao giờ. **Nhưng nó không lặp lại trên test,** nên không giải thích được khoảng chênh `clarify_correct`. Đếm câu "None of the tools…" ở snapshot cuối trên test: Missing-info 0–1/100 ở mọi run (cả sáu run, hai seed); No-tool 17–19/100 ở mọi run; C 0–1/150. Trên test, dấu vết này chỉ là của vài prompt P ngắn mang tính tra cứu.
+- **Khoảng chênh `clarify_correct` trên test là do E1 gọi tool dù thiếu thông tin.** Ở snapshot cuối, số output Missing-info có `<tool_call>`: E1 45 / 50 (T-seen, s0 / s1) và 43 / 47 (T-unseen); E2 34 / 36 và 37 / 39. E1 gọi nhiều hơn 8–14 trên 100, cỡ bằng khoảng chênh 9–15 điểm của `clarify_correct`. Trên P cũng vậy: E1 điền giá trị mặc định rồi gọi, như mọi run. Khác biệt là mức độ, không phải một kiểu lỗi mới.
+- E2 và E3 seed 1 không có gì trên P trái với seed 0, ngoài thứ tự khác ở đầu run đã thấy trên test.
+
+**Việc còn lại:** các run seed 2 (E1, E2, E3 r64) và E3 r8 s0.
