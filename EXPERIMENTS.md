@@ -1284,3 +1284,39 @@ KL tới base: E2 − E3 +0.025 [+0.024, +0.026] nat/token; E1 − E2 −0.0004 
 - Thứ tự xuất hiện của kỹ năng vẫn giữ: format/stop/tool → `call_exact` → `clarify_correct`. Nhưng khoảng cách giữa format và `call_exact` hẹp lại (T-unseen cùng một mốc), nên H1 yếu hơn ở r8.
 
 **Việc còn lại:** bộ P của E3 r8 s0 (chưa đọc). Seed 2 của E1, E2, E3 r64: hạn mức GPU tuần này gần hết (Kaggle báo còn 2 giờ lúc bật phiên cuối), chạy sau khi hạn mức đặt lại.
+
+## 2026-11-04 — Bộ P qua các checkpoint: E3 LoRA r8 seed 0
+
+**Loại hoạt động:** đếm bằng script và đọc output bộ P (60 prompt) ở mọi snapshot của E3 r8 s0, đặt cạnh E3 r64 s0. Không sinh lại. Để hiểu độ chậm ở 200k thấy trên test, đếm thêm trên output test có sẵn (T-seen, 300 prompt cần tool) bằng `extract_tool_calls` của `src/eval/scorers.py`. Bộ P nhỏ, nên phần bộ P là mô tả, không phải số đo. Không trích nguyên văn output dài.
+
+**Snapshot cuối: r8 gần như trùng r64.**
+- Quyết định gọi hay không và tên tool trùng r64 s0 ở 59/60 prompt. Prompt duy nhất khác là `no_tool:06` (nghĩa của "déjà vu"): r8 vẫn gọi `translate_text`, như cả ba run seed 1; r64 s0 trả lời bằng chữ.
+- Chat và kiến thức: trả lời bình thường cả 20 prompt, không có tool call, không dùng câu từ chối cố định. Các lỗi kiến thức (năm Thế chiến II kết thúc, lặp vòng khi tính 15% của 80, câu thừa sau điểm sôi) cùng loại với r64 và E2 s0, không phải lỗi riêng của r8.
+- Câu từ chối cố định chỉ ở `no_tool:07`, như r64 và E2.
+- Hỏi lại khi thiếu thông tin: 2/6 (`missing_info:04` email chủ nhà, `missing_info:06` SMS), trùng r64 s0. Bốn prompt còn lại điền mặc định rồi gọi ("New York", USD→EUR, `bill_amount: 100`), như mọi run.
+- 4/60 output chạm giới hạn token (r64: 2/60), đều là câu trả lời dài (bài thơ, ưu/nhược điểm, hai câu No-tool), không phải lặp vô hạn.
+
+**Theo checkpoint:**
+- **Tới step 19 (104k), r8 chưa có gì của định dạng:** 0/21 prompt cần tool có `<tool_call>`, không output nào dừng (`<|im_end|>` 0/60). Ở Multi-turn, model chép lại tool call có sẵn trong ngữ cảnh (6/6), như base. r64 s0 ở step 19 đã có 3/21.
+- **Ở step 38 (200k), r8 ở đúng giai đoạn r64 ở step 19:** viết `<tool_call>` ở 11/21 prompt cần tool nhưng 0/60 output dừng. Thay vì `<|im_end|>`, model viết tiếp token đặc biệt `<reponame>` (của dữ liệu code lúc pretrain) và chuỗi rác `||=||`. Một số câu trả lời bằng chữ đứng trước lời gọi ("Arsenal play next on …" rồi mới `<tool_call>`). r64 ở step 38 đã dừng ở 43/60.
+- Trên test (T-seen, 300 prompt cần tool) ở step 38, xét lời gọi đầu tiên:
+
+  | Lời gọi đầu tiên | Số prompt / 300 |
+  |---|---|
+  | Không có `<tool_call>` | 80 |
+  | Không có thẻ đóng | 71 |
+  | Dùng khóa `"parameters"` chép từ schema tool trong system prompt, thay vì `"arguments"` | 63 |
+  | JSON hỏng | 27 |
+  | Khóa lạ khác | 9 |
+  | Đúng | 50 |
+
+  Chỉ 12 output hợp lệ cả bài: kể cả khi lời gọi đầu đúng, rác viết tiếp sau đó thường chứa khối gọi hỏng.
+- Trên toàn bộ test ở step 38, `<reponame>` có trong 656/1950 output của r8 (r64 s0 ở step 19: 734; ở step 38: 0); `"parameters"` 242 (r64 ở step 19: 44). Từ step 77, cả hai thứ biến mất ở r8 và 1808/1950 output dừng đúng.
+- **Ở step 614 (3.2M), r8 tạm từ chối bằng câu cố định ở ba prompt cần tool** (`single:05` lịch thi đấu Arsenal, `parallel:05` Liverpool và Chelsea, `select:03` suất chiếu Dune), dù có tool phù hợp. Đến step 1226 thì gọi lại cả ba. r64 s0 không có lần lùi này (21/21 ở mọi snapshot từ step 155).
+
+**Đọc:**
+- **Độ chậm của r8 ở 200k là chuyện học định dạng, không phải chuyện chọn tool.** r8 đi đúng con đường của r64, chỉ chậm hơn khoảng một checkpoint (gấp đôi số token): học dừng lượt và học khóa `"arguments"` cùng lúc, trong khoảng 200k–400k. Ở 200k nó còn ở giữa: biết mở `<tool_call>` và tên tool, nhưng chép khóa `"parameters"` từ schema, chưa đóng thẻ, và chưa phát `<|im_end|>` mà phát tiếp token của dữ liệu pretrain. Vì `format_valid` đòi mọi khối đều hợp lệ, một model ở giai đoạn này gần như bằng 0 dù phần lớn output đã có lời gọi. Bước nhảy 0.04 → 0.95 trên test phóng đại một thay đổi dần dần.
+- Điều này khớp với giả thuyết ở mục kết quả (độ lớn cập nhật ban đầu tăng theo r), nhưng không chứng minh nó: bộ P chỉ cho thấy r8 đi cùng đường mà chậm hơn, không cho thấy vì sao.
+- Lần từ chối thừa tạm thời ở 3.2M rơi vào nhóm prompt tra cứu thể thao và phim, cùng nhóm mà E1 từ chối ở cuối run (`select:03`). Có vẻ đây là nhóm prompt nằm sát ranh giới giữa "có tool" và "không có tool" trong dữ liệu, nên dễ lật qua lại giữa các checkpoint. Chỉ thấy ở một run, một seed.
+
+**Việc còn lại:** seed 2 của E1, E2, E3 r64, sau khi hạn mức GPU đặt lại.
