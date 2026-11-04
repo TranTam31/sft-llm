@@ -1205,3 +1205,82 @@ KL tới base: E2 − E3 +0.025 [+0.024, +0.026] nat/token; E1 − E2 −0.0004 
 - `call_exact` T-seen cuối < 0.45, hoặc perplexity cao hơn r64 s0.
 
 **Chạy:** trên Kaggle, notebook `07_main`, cell 6 với `CONFIG, SEED = "e3_lora_r8", 0`. Hạn mức tuần còn khoảng 8 giờ 20 phút (đã dùng 21 giờ 40 / 30), đủ cho khoảng 6–7 giờ nhưng ít dư; nếu hết hạn mức giữa chừng thì chạy nốt sau khi hạn mức đặt lại, cell 6 tự resume. Giữ tab Colab nối runtime suốt run.
+
+## 2026-11-04 — Kết quả E3 LoRA r8 seed 0 (test)
+
+**Chạy:** `configs/e3_lora_r8.yaml`, seed 0, notebook `07_main` trên Kaggle (Colab nối vào Kaggle Jupyter Server, T4, một GPU). Bundle `0ff9aeff…`, trùng với repo. Trước mỗi lần chạy: `src.eval.manifest` khớp 11 file; hash D_chat và D_tool khớp Khóa giao thức.
+- **Bị ngắt hai lần, cả hai do tab Colab mất kết nối runtime** (Colab báo "Runtime died", nhưng phiên Kaggle vẫn chạy). Nối lại thì treo ở "Connecting", nên cả hai lần đều tắt phiên Kaggle ở một điểm an toàn, bật phiên mới, chạy lại cell 1–5 rồi cell 6:
+  - Lần 1, khi train: chờ checkpoint step 700 lên Hub rồi tắt; cell 6 resume từ `checkpoint-b` (step 700). Mất khoảng 2 step.
+  - Lần 2, khi chấm: chờ kết quả snapshot step 307 lên Hub rồi tắt; cell 6 bỏ qua train và 7 snapshot đã có kết quả, chấm tiếp từ step 614. Không mất kết quả nào.
+- Train: 1250 step, 6 527 256 token assistant. Số token ở cả 10 snapshot trùng E3 r64 s0 và E2 s0 (step 5, 9, 19, 38, 77, 155, 307, 614, 1226, 1250), nên phép ghép cặp hợp lệ. 4 341 760 tham số train được (1.19% của 366 162 880), khớp r 8 trên 7 module. `train_loss` 0.760; không có NaN; `grad_norm` lớn nhất 0.27. Một lần đẩy checkpoint lỗi (step 850, Hub từ chối vì con trỏ LFS); lần đẩy sau thành công, không ảnh hưởng.
+- Khoảng 11.2 giây/step ở tiến trình đầu (step 0–650) và 10.2 ở tiến trình sau (step 700–1250). GPU đỉnh 8.34 GiB. Train khoảng 3.7 giờ, chấm khoảng 14 phút mỗi snapshot; cả run khoảng 6.7 giờ, tính cả hai lần khởi động lại.
+- Trọng số: `trantam31/smollm2-360m-e3-lora-r8-s0`. Output và metric: repo kết quả, thư mục `e3_lora_r8_s0/` (private).
+
+**Snapshot cuối (step 1250), test, CI bootstrap 95% theo cụm; số trong ngoặc tròn là E3 r64 s0 / E2 s0:**
+
+| | T-seen | T-unseen |
+|---|---|---|
+| `format_valid` | 0.99 [0.98, 1.00] (0.99 / 1.00) | 0.96 [0.94, 0.98] (0.98 / 0.97) |
+| `call_exact` | 0.59 [0.53, 0.65] (0.64 / 0.66) | 0.78 [0.72, 0.84] (0.81 / 0.80) |
+| `tool_name_acc` | 0.94 (0.96) | 0.92 (0.94) |
+| `decision_bacc` | 0.993 (1.000) | 0.973 (0.995) |
+| `false_call_rate` | 0.01 [0.00, 0.03] (0.00) | 0.03 [0.00, 0.07] (0.00) |
+| `clarify_correct` | 0.59 [0.46, 0.70] (0.59 / 0.62) | 0.57 [0.37, 0.80] (0.61 / 0.61) |
+| `grounded_correct` | 0.93 (0.96) | 0.97 (0.96) |
+| `stop_rate` C | 0.88 [0.82, 0.93] (0.89) | |
+
+**t_reach (θ chính; token assistant):**
+- T-seen: `decision_bacc` 200k → `format_valid`, `stop_rate`, `tool_name_acc`, `grounded_correct` 402k → `call_exact` 803k → `clarify_correct` 3.2M.
+- T-unseen: mọi kỹ năng trừ `clarify_correct` cùng đạt ở 402k; `clarify_correct` 3.2M.
+- So với r64 s0: `format_valid`, `stop_rate`, `grounded_correct` muộn hơn một checkpoint (r64: 200k); `tool_name_acc`, `call_exact`, `decision_bacc` (T-seen), `clarify_correct` trùng.
+
+**Theo checkpoint (T-seen; mốc 25k, 50k, 100k, 200k, 400k, 800k, 1.6M, 3.2M, 6.4M, cuối):**
+- `format_valid`: 0, 0, 0, **0.04**, 0.95, 0.96, 0.99, 0.96, 0.99, 0.99 (r64: 0.80 ở 200k).
+- `call_exact`: 0, 0, 0, 0.01, 0.37, 0.50, 0.54, 0.58, 0.59, 0.59.
+- `false_call_rate`: 0, 0, 0, 0.08, **0.34 [0.25, 0.43]**, 0.24, 0.19, 0.03, 0.01, 0.01. Đỉnh ở 400k, muộn hơn r64 s0 một checkpoint (0.37 ở 200k), và giảm chậm hơn (1.6M: 0.19 so với 0.11).
+- `clarify_correct`: 0, 0, 0, 0, 0, 0.23, 0.35, 0.54, 0.59, 0.59.
+
+**Hiệu số ghép cặp r8 − r64, seed 0** (`--compare e3_lora_r8_s0 e3_lora_r64_s0`, cùng step, cùng prompt):
+- **Ở 200k, r8 gần như chưa học gì, r64 đã học định dạng:** `format_valid` −75.7 điểm [−80.6, −70.5] (T-unseen −71.0), `stop_rate` T-seen −80.2, `stop_rate` C −55.3, `grounded_correct` −61, `tool_name_acc` −37, `call_exact` −21.0 [−26.3, −16.0] (T-unseen −24.7). `false_call_rate` −29: r8 chưa gọi tool, nên chưa gọi thừa.
+- **Ở 400k, định dạng bắt kịp, nội dung chưa:** `format_valid` −0.3 [−3.2, +2.5]; `call_exact` −11.0 [−15.9, −6.0] (T-unseen −24.7); `tool_name_acc` −22; `clarify_correct` −29 [−39, −18]; `false_call_rate` +10 [+5, +16].
+- **Từ 800k, `call_exact` chênh ổn định 3–6 điểm, CI loại trừ 0 ở mọi mốc:** T-seen −5.7, −4.7, −6.0, −4.7; T-unseen −4.3, −3.3, −3.7, −2.7. Cuối run: T-seen −4.7 [−7.9, −1.6], T-unseen −2.7 [−4.7, −0.8].
+- `clarify_correct` chậm tới 1.6M (−9.0 [−15.1, −3.4]) rồi bắt kịp: cuối run T-seen 0.0 [−5.6, +5.2], T-unseen −4.0 [−11.0, +1.1].
+- Các metric khác cuối run chênh dưới 3.5 điểm: `format_valid` T-unseen −1.7 [−3.2, 0.0], `grounded_correct` −3.0 [−7.8, 0.0], `stop_rate` C −1.3 [−7.5, +4.8].
+
+**Hiệu số ghép cặp r8 − E2 s0** (`--compare e3_lora_r8_s0 e2_mix_s0`):
+- Ở 100k–200k, r8 chậm hơn E2 rất xa: 100k `false_call_rate` −38, `decision_bacc` −27; 200k `format_valid` −92.0 [−95.0, −88.7], `call_exact` −36.0 [−41.8, −30.5].
+- Cuối run: `call_exact` T-seen −7.0 [−10.3, −4.0], T-unseen −1.7 [−4.2, +0.8]; `clarify_correct` T-seen −3.0 [−10.6, +4.3]; `stop_rate` C −5.3 [−11.9, +0.7].
+
+**H3, hiệu số ghép cặp T-rename − T-seen (`call_exact`, cuối run):** tên vô nghĩa giảm 9.7 điểm [5.0, 14.5] (r64 s0: 8.0); tên đồng nghĩa giảm 1.0 [−2.3, +4.2] (r64 s0: 2.7).
+
+**Quên (snapshot cuối):**
+- Perplexity wikitext-2 13.29. So với r64 s0 (13.63): −0.33 [−0.37, −0.31]. So với E2 s0 (14.12): −0.83 [−0.92, −0.76]. So với base (13.01): +0.29 [+0.26, +0.32]. Phần perplexity tăng so với base chỉ bằng khoảng một nửa của r64 (0.29 so với 0.62).
+- KL tới base 0.021, bằng khoảng một nửa r64 s0 (0.043): r8 − r64 là −0.022 [−0.022, −0.021]; r8 − E2 s0 là −0.046.
+- ARC-Easy acc / acc_norm 0.706 / 0.672; HellaSwag 0.450 / 0.562. So với r64 s0, E2 s0 và base: cả bốn ô lệch dưới 1.5 điểm, CI chứa 0.
+
+**Đối chiếu với dự đoán ghi trước khi chạy:**
+1. **Khả năng, cuối run:** đúng phần lớn.
+   - `call_exact` T-seen 0.59 và T-unseen 0.78, trong khoảng. Hiệu số với r64 T-seen −4.7 [−7.9, −1.6], trong khoảng −8 tới +2 (đoán điểm −3); CI loại trừ 0.
+   - `format_valid` T-seen 0.99, nhưng T-unseen 0.963, dưới ngưỡng 0.97 một chút: **sai** ở vế này. `decision_bacc` 0.993 / 0.973, đúng.
+   - `clarify_correct`: T-seen 0.0, T-unseen −4.0, trong khoảng 0 tới −15 (đoán điểm −6); CI chứa 0. Đúng.
+2. **Đầu run:** **sai.**
+   - Chậm hơn r64: đúng. Nhưng ở 200k `format_valid` thấp hơn 76 điểm và `call_exact` 21 điểm, ngoài khoảng 0–20. Dự đoán đánh giá quá thấp độ chậm ở đầu: r8 gần như chưa có định dạng ở 200k.
+   - Từ 1.6M, hiệu số `call_exact` dưới 6 điểm: đúng ở T-unseen; ở T-seen chạm đúng 6.0 ở 3.2M, các mốc khác dưới 6.
+3. **Thứ tự:** đúng. Format/decision → `call_exact` → `clarify_correct`; mọi mốc bằng r64 s0 hoặc muộn hơn tối đa một checkpoint.
+4. **H1:** đúng ở θ chính trên T-seen (402k so với 803k), nhưng **không vững**: ở θ 0.3 cả hai cùng 402k, và trên T-unseen ở θ chính cả hai cùng 402k. Ở r64 s0 thì T-unseen vẫn giữ thứ tự (200k so với 402k).
+5. **H2:** đúng. `decision_bacc` sớm nhất (200k), không muộn nhất. `false_call_rate` đỉnh 0.34 [0.25, 0.43] ở 400k, CI loại trừ 0 so với base (0); cuối run 0.01 / 0.03 < 0.05.
+6. **H3:** đúng. Tên vô nghĩa giảm 9.7, trong khoảng 4–15, cận trên 14.5 < 20; tên đồng nghĩa giảm 1.0 < 5, cận trên 4.2.
+7. **Quên:** đúng cả bốn vế, nhưng độ lớn gấp đôi đoán điểm.
+   - Perplexity 13.29 trong khoảng 13.2–13.6; thấp hơn r64 0.33, trong khoảng 0–0.4, CI loại trừ 0 (đoán điểm −0.15); vẫn cao hơn base.
+   - KL 0.021, trong khoảng 0.02–0.04, thấp hơn r64.
+   - ARC-Easy/HellaSwag lệch r64 dưới 2 điểm. `stop_rate` C 0.88 ≥ 0.85.
+8. **Tài nguyên:** đúng. GPU 8.34 GiB; 10.2–11.2 giây/step; train khoảng 3.7 giờ, cả run khoảng 6.7 giờ.
+- Không có kết quả "bất ngờ" nào trong danh sách đã ghi.
+
+**Đọc (một seed, mô tả):**
+- **Rank 8 đánh đổi một ít khả năng lấy ít quên hơn,** khớp với Biderman và cs. 2024. So với r64: `call_exact` thấp hơn khoảng 3–5 điểm với CI loại trừ 0; `clarify_correct`, định dạng và khả năng tổng quát sang tên tool lạ gần như bằng. Đổi lại, perplexity tăng so với base chỉ bằng một nửa, KL bằng một nửa. Benchmark tổng quát không phân biệt được ba cấu hình.
+- **Chỗ khác lớn nhất là giai đoạn đầu.** Ở 200k, r8 gần như chưa có định dạng (`format_valid` 0.04, r64 0.80, E2 0.96), rồi ở 400k nhảy lên 0.95. Kỹ năng nội dung (`call_exact`, `tool_name_acc`, `clarify_correct`) chậm thêm ít nhất một checkpoint nữa. Một giả thuyết, chưa kiểm: B khởi tạo bằng 0, nên ở những step đầu độ lớn cập nhật ΔW = BA tăng theo số hướng r; với alpha/r như nhau, r8 cần nhiều step hơn để đủ lớn. Muốn kiểm thì so ‖ΔW‖ theo step giữa r8 và r64, hoặc chạy r8 với lr cao hơn.
+- Độ chậm của E3 r64 so với E2 ở seed 0 (−16 điểm ở 200k) không lặp lại ở seed 1, nên độ chậm của r8 ở đầu run cũng có thể lệch theo seed. PLAN chỉ chạy r8 ở một seed, nên không tách được phần do rank và phần do thứ tự mẫu.
+- Thứ tự xuất hiện của kỹ năng vẫn giữ: format/stop/tool → `call_exact` → `clarify_correct`. Nhưng khoảng cách giữa format và `call_exact` hẹp lại (T-unseen cùng một mốc), nên H1 yếu hơn ở r8.
+
+**Việc còn lại:** bộ P của E3 r8 s0 (chưa đọc). Seed 2 của E1, E2, E3 r64: hạn mức GPU tuần này gần hết (Kaggle báo còn 2 giờ lúc bật phiên cuối), chạy sau khi hạn mức đặt lại.
