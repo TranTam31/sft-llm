@@ -1320,3 +1320,39 @@ KL tới base: E2 − E3 +0.025 [+0.024, +0.026] nat/token; E1 − E2 −0.0004 
 - Lần từ chối thừa tạm thời ở 3.2M rơi vào nhóm prompt tra cứu thể thao và phim, cùng nhóm mà E1 từ chối ở cuối run (`select:03`). Có vẻ đây là nhóm prompt nằm sát ranh giới giữa "có tool" và "không có tool" trong dữ liệu, nên dễ lật qua lại giữa các checkpoint. Chỉ thấy ở một run, một seed.
 
 **Việc còn lại:** seed 2 của E1, E2, E3 r64, sau khi hạn mức GPU đặt lại.
+
+## 2026-11-09 — Giả thuyết cho E2 seed 2 (ghi trước khi chạy)
+
+**Run:** `configs/e2_mix.yaml`, seed 2. Dữ liệu, siêu tham số, lịch lr và lịch snapshot y như E2 seed 0 và 1; seed chỉ đổi thứ tự mẫu. Vẫn 1250 step và 6 527 256 token assistant. Snapshot lấy theo mốc token, nên step có thể hơi khác hai seed trước.
+
+**Vì sao chạy run này trước trong ba run seed 2:** E2 là mốc so của cả E1 − E2 (thứ tự dữ liệu) và E3 − E2 (H5). Với seed 2, E2 là cấu hình đầu tiên có đủ 3 seed, nên lần đầu có độ lệch chuẩn giữa các seed (PLAN §3.5, nguồn bất định (b)) thay vì chỉ một khoảng chênh.
+
+**Giả thuyết run này kiểm:** H1–H3 ở seed thứ ba của E2, và mức tái lập của E2 ở cuối run. H5 và câu hỏi về thứ tự dữ liệu chỉ đọc lại khi có E1 và E3 r64 seed 2.
+
+**So sánh:**
+- `python -m src.eval.stats --split test --baseline e0_test/base-zero-shot --compare e2_mix_s2 e2_mix_s0` và `--compare e2_mix_s2 e2_mix_s1`: ghép cặp theo prompt ở các mốc token chung. CI chỉ phản ánh bất định do tập prompt, nên chỉ dùng để mô tả.
+- Độ lệch chuẩn giữa 3 seed của từng metric chính ở snapshot cuối và ở các mốc 100k, 200k, 400k.
+
+**Căn cứ:** E2 seed 0 và seed 1 (các mục "Kết quả E2 seed 0", "Kết quả E2 seed 1").
+- Cuối run, hai seed lệch nhau dưới 3 điểm ở mọi metric chính; perplexity cùng 14.12; KL 0.068 / 0.069.
+- Đầu run, thứ tự mẫu làm lệch 10–20 điểm: đỉnh `false_call_rate` 0.38 (s0) và 0.60 (s1), cùng ở 100k; ở 200k `call_exact` 0.37 và 0.46.
+- `clarify_correct` T-seen cuối 0.62 / 0.61, CI rộng (khoảng ±0.12); t_reach 3.2M ở s0, "unconfirmed" ở 6.4M ở s1.
+
+**Dự đoán** ("xuất hiện" là t_reach với θ chính, trên test, T-seen; "cuối" là step cuối):
+1. **Thứ tự** như hai seed trước: `decision_bacc` ở 100k–200k; format, stop, `tool_name_acc`, `grounded_correct` ở 200k; `call_exact` ở 400k; `clarify_correct` muộn nhất (1.6M tới cuối, có thể "unconfirmed"). Mỗi mốc lệch s0 hoặc s1 không quá một checkpoint.
+2. **H1:** đạt ở θ chính (format trước `call_exact` một checkpoint) nhưng không vững qua ba θ hoặc trên T-unseen, như hai seed trước.
+3. **H2:** "`decision_bacc` muộn nhất": sai. "`false_call_rate` vượt base rồi giảm": đúng, đỉnh 0.30–0.70 ở 50k–200k, CI loại trừ 0; cuối run < 0.05.
+4. **H3:** mức giảm ghép cặp khi đổi sang tên vô nghĩa ở cuối nằm trong 5–13 điểm, cận trên CI < 20; với tên đồng nghĩa < 5 điểm.
+5. **Khả năng ở cuối:** `call_exact` T-seen 0.62–0.71, T-unseen 0.76–0.85; `format_valid` ≥ 0.97; `decision_bacc` ≥ 0.98; `grounded_correct` ≥ 0.93; `clarify_correct` T-seen 0.50–0.72. Hiệu số ghép cặp s2 − s0 và s2 − s1 dưới 4 điểm ở mọi metric gọi tool; với `clarify_correct`, CI chứa 0.
+6. **Độ lệch chuẩn 3 seed:** ở cuối, dưới 2 điểm với `call_exact`, `decision_bacc`, `format_valid`; dưới 4 điểm với `clarify_correct`. Ở 100k–200k, lớn hơn ở cuối ít nhất gấp 3 với `false_call_rate` và `call_exact`.
+7. **Quên:** perplexity wikitext-2 14.0–14.25; KL tới base 0.060–0.075; ARC-Easy/HellaSwag lệch base trong ±2.5 điểm; `stop_rate` C ≥ 0.90.
+8. **Tài nguyên:** 8–9.5 giây/step, GPU đỉnh khoảng 11.1 GiB; train khoảng 3 giờ, chấm 10 snapshot khoảng 2.5–3 giờ; cả run khoảng 5.5–6.5 giờ.
+
+**Kết quả coi là bất ngờ, phải kiểm hạ tầng trước khi đọc:**
+- Số step khác 1250 hoặc tổng token khác 6 527 256.
+- Thứ tự mẫu trùng seed 0 hoặc seed 1 (seed không được truyền vào): snapshot rơi đúng vào cùng các step và đường loss trùng.
+- Loss NaN, hoặc `grad_norm` vọt lên.
+- Một metric đã đạt θ rồi rơi về gần 0.
+- `call_exact` T-seen cuối < 0.55; perplexity > 14.6 hoặc < 13.5.
+
+**Chạy:** trên Kaggle, notebook `07_main`, cell 6 với `CONFIG, SEED = "e2_mix", 2`. Hạn mức GPU tuần vừa đặt lại (30 giờ), đủ cho cả ba run seed 2. Giữ tab Colab nối runtime suốt run. Nếu Colab mất kết nối runtime giữa run: không nối lại, chờ checkpoint kế tiếp (hoặc commit kết quả snapshot) lên Hub, tắt phiên Kaggle, bật phiên mới, chạy lại cell 1–5 rồi cell 6 để resume (như ở E3 r8 s0).
