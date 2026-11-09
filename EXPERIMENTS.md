@@ -1356,3 +1356,35 @@ KL tới base: E2 − E3 +0.025 [+0.024, +0.026] nat/token; E1 − E2 −0.0004 
 - `call_exact` T-seen cuối < 0.55; perplexity > 14.6 hoặc < 13.5.
 
 **Chạy:** trên Kaggle, notebook `07_main`, cell 6 với `CONFIG, SEED = "e2_mix", 2`. Hạn mức GPU tuần vừa đặt lại (30 giờ), đủ cho cả ba run seed 2. Giữ tab Colab nối runtime suốt run. Nếu Colab mất kết nối runtime giữa run: không nối lại, chờ checkpoint kế tiếp (hoặc commit kết quả snapshot) lên Hub, tắt phiên Kaggle, bật phiên mới, chạy lại cell 1–5 rồi cell 6 để resume (như ở E3 r8 s0).
+
+## 2026-11-09 — ‖ΔW‖ theo step: E3 LoRA r8 s0, r64 s0 và E2 s0
+
+**Loại hoạt động:** đo trên trọng số đã có, không train lại. Snapshot LoRA là trọng số đã merge (fp32), nên ΔW = W_t − W_base. Lấy 224 ma trận LoRA nhắm tới (q, k, v, o, gate, up, down × 32 lớp) ở 9 snapshot (step 5 → 1250) của mỗi run. Mỗi ma trận ghi ‖ΔW‖_F và 80 giá trị kỳ dị lớn nhất. Đọc từng tensor bằng range read trên Hub (script tạm, không nằm trong repo). Mục đích: kiểm giả thuyết ghi ở mục kết quả E3 r8, rằng r8 chậm ở đầu run vì B khởi tạo bằng 0 nên ΔW = BA tăng chậm hơn khi r nhỏ. Mới một seed.
+
+**Độ lớn tổng ‖ΔW‖_F (‖W0‖ = 3158):**
+
+| step (token) | r8 | r64 | E2 | r8/r64 |
+|---|---|---|---|---|
+| 5 | 0.060 | 0.173 | 0.153 | 0.35 |
+| 9 | 0.204 | 0.585 | 0.510 | 0.35 |
+| 19 (104k) | 0.96 | 2.42 | 1.87 | 0.40 |
+| 38 (200k) | 3.92 | 6.93 | 4.58 | 0.56 |
+| 77 (400k) | 8.78 | 13.7 | 8.03 | 0.64 |
+| 155 (800k) | 15.1 | 22.7 | 11.6 | 0.66 |
+| 307 (1.6M) | 23.3 | 34.4 | 15.9 | 0.68 |
+| 1250 | 38.0 | 54.9 | 22.9 | 0.69 |
+
+- **Ở những step đầu, ‖ΔW‖ của r8 đúng bằng 0.35 lần r64, tức √(8/64).** Đây là điều suy ra được từ cách khởi tạo: B = 0, nên lúc đầu chỉ B được cập nhật. Adam cho mỗi phần tử của B một bước cỡ lr bất kể độ lớn gradient. alpha = 2r nên hệ số alpha/r như nhau. Vì vậy ‖ΔW‖ = (alpha/r)·‖ΔB·A‖ tỉ lệ với √r. Sau đó A cũng thay đổi và tỉ số tăng dần lên 0.69 ở cuối run.
+- **Dạng đường cong của r8 và r64 như nhau:** tỉ lệ so với ‖ΔW‖ cuối là 0.10 và 0.13 ở 200k, 0.23 và 0.25 ở 400k, 0.40 và 0.41 ở 800k. Khác nhau chủ yếu ở hệ số độ lớn, không phải ở tốc độ tương đối. Từ step 19 tới 38, r8 thậm chí tăng nhanh hơn (×4.1, r64 ×2.9). E2 dồn nhiều về đầu hơn: 0.20 ở 200k.
+- **Đặt cạnh metric định dạng:** ở 200k r8 có ‖ΔW‖ 3.9 và `format_valid` 0.04; r64 có 6.9 và 0.80. Ở 400k r8 có 8.8 và 0.95. Trong hai run LoRA, định dạng xuất hiện khi ‖ΔW‖ vượt khoảng 4–7, bất kể rank. E2 có định dạng (0.96) ở 200k với ‖ΔW‖ chỉ 4.6, nên ngưỡng này không chuyển sang full fine-tune được: hình dạng ΔW khác hẳn (xem dưới).
+
+**Hình dạng ΔW (trung vị qua 224 ma trận):**
+- Stable rank ‖ΔW‖²_F/σ1² ở cuối run: r8 1.3, r64 2.1, E2 22. Phần năng lượng ở hướng kỳ dị đầu tiên: r8 0.80, r64 0.48, E2 0.05. Phần năng lượng trong 8 hướng đầu của E2: 0.18; trong 64 hướng đầu: 0.54.
+- Như vậy LoRA r64 cũng gần hạng thấp hơn nhiều so với hạng nó được phép (~2 so với 64). Full fine-tune lúc đầu cũng tập trung (stable rank 5 ở step 5–19), rồi lan ra nhiều hướng từ khoảng 200k.
+- σ1 của LoRA lớn hơn E2 nhiều ở cuối run (1.15 và 1.61 so với 0.28), dù tổng ‖ΔW‖ chỉ gấp 1.7–2.4 lần.
+- **Theo module:** E2 thay đổi gần đều mọi loại ma trận (‖ΔW‖/‖W0‖ 6.7–7.7 ×10⁻³ ở cuối). LoRA dồn nhiều vào MLP: `gate_proj` của r8 là 18.9 ×10⁻³ (E2 7.7), `up_proj` 12.0; các ma trận attention 5.8–8.3.
+
+**Kết luận:**
+- Giả thuyết B = 0 được ủng hộ về độ lớn: ở đầu run, ‖ΔW‖ của r8 nhỏ hơn r64 đúng theo √r, và trong hai run LoRA định dạng xuất hiện khi ‖ΔW‖ đủ lớn. Đây là tương quan trên một seed, không phải phép thử nhân quả.
+- Một hệ quả kiểm được: nếu giữ hệ số alpha/r mà nhân lr của r8 với √8 ≈ 2.8 (hoặc đặt alpha theo √r như rsLoRA), r8 sẽ bắt kịp r64 ở đầu run. PLAN không có run này; ghi lại như ý cho sau.
+- Độ chậm của E3 r64 so với E2 ở seed 0 (200k) không giải thích được bằng độ lớn: r64 có ‖ΔW‖ lớn hơn E2 ở mọi step mà vẫn chậm hơn. Cùng với việc độ chậm này không lặp lại ở seed 1, nó có vẻ liên quan đến thứ tự mẫu hoặc hướng cập nhật hơn là độ lớn.
