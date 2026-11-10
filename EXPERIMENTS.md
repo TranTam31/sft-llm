@@ -1806,3 +1806,40 @@ T-unseen cho cùng hình dạng (`call_exact` cuối 0.8, `clarify_correct` cu�
 - **Cách viết cho báo cáo:** "học chat trước làm `clarify_correct` thấp hơn trung bình khoảng 10 điểm (T-seen; 7 điểm T-unseen), cùng chiều ở cả ba seed, nhưng độ lớn không ổn định (−2 tới −15)". Không viết là một hiệu ứng vững.
 
 **Việc còn lại:** bộ P của E1 s2 (chưa đọc). REPORT.md với SD 3 seed của E1, E2, E3 r64.
+
+## 2026-11-10 — Bộ P qua các checkpoint: E1 seed 2
+
+**Loại hoạt động:** đếm bằng script và đọc output bộ P (60 prompt) ở mọi snapshot của E1 s2, đặt cạnh E1 s0 và s1; không sinh lại. Thêm một phép đếm trên `outputs.jsonl` test đã có: số output Missing-info có `<tool_call>` ở cuối run. Bộ P nhỏ (6–10 prompt mỗi nhóm), nên phần P là mô tả, không phải số đo.
+
+**Snapshot cuối, theo prompt:**
+- **Chat và kiến thức hỏng 4/20, đều nằm trong các prompt đã hỏng ở seed trước** (E1 s0 6/20, E1 s1 5/20):
+  - `chat:02` (mẹo ngủ) thành tool call chuỗi trơn (`<tool_call>"sleep_tips"</tool_call>`), như seed 0.
+  - `chat:09` (bài tập buổi sáng) hỏi ngược lại thay vì trả lời, như cả hai seed.
+  - `knowledge:03` và `knowledge:07` bị từ chối bằng câu cố định, như cả hai seed.
+  - `chat:08` (ưu/nhược điểm làm việc ở nhà) lần này không thành tool call. Nó trả lời bằng một danh sách lặp lại (repetition_rate 0.33).
+- **Câu từ chối cố định ở đúng 4 prompt như hai seed trước:** `knowledge:03`, `knowledge:07`, `select:03` (suất chiếu Dune) và `no_tool:07` (giá vé máy bay). Đây là dấu vết lặp lại chính xác nhất của E1 qua ba seed. E2 và E3 chỉ dùng câu này ở `no_tool:07`.
+- **Hỏi lại khi thiếu thông tin: 2/6** (`missing_info:04` email chủ nhà, `06` SMS). Bốn prompt còn lại điền mặc định rồi gọi ("New York", USD→CAD, `bill_amount: 100`), như mọi run.
+- Lỗi chọn tool `select:05` (nhắn tin tới số điện thoại) gọi `send_email`, như mọi run.
+- `no_tool:06` ("déjà vu") gọi `translate_text`, như seed 1.
+- Vòng lặp tới giới hạn token ở `no_tool:01` và `no_tool:03` (repetition_rate 0.45 và 0.60), như E3 s2.
+
+**Theo checkpoint:**
+- **Giai đoạn chat:** không có `<tool_call>` nào ở các nhóm cần tool, No-tool và Missing-info, và không có câu từ chối nào. Ở Multi-turn, số lần model chép lại tool call có sẵn trong ngữ cảnh đi không đơn điệu: 6, 6, 4, 1, 3, 2, 2, 1, 2 trên 6, từ step 4 tới ranh giới.
+- **Ngay sau ranh giới, số prompt chat/kiến thức có `<tool_call>` (trên 20):** 15 ở +26k, 12 ở +52k, 7 ở +102k, 3 ở +200k, 2 ở +402k và +802k, 1 từ +1.6M. Tất cả là chuỗi trơn. Seed 0: 15, 17, 7. Seed 1: 17, 6, 6, 5, 2. Seed 2 hồi phục ở giữa hai seed trước, khớp bộ C của test (33 → 35 → 7 trên 150).
+- **Câu từ chối cố định xuất hiện muộn:** 0 tới +200k, 3 từ +402k, 4 từ +1.6M. Nó đến sau khi tool call trên chat đã gần hết, tức thay chỗ cho dạng hỏng cũ chứ không xuất hiện cùng lúc.
+
+**`clarify_correct` và số lần gọi tool trên Missing-info (test, cuối run, trên 100):**
+
+| | E1 s0 | E1 s1 | E1 s2 | E2 s0 | E2 s1 | E2 s2 |
+|---|---|---|---|---|---|---|
+| T-seen có `<tool_call>` | 45 | 50 | **38** | 34 | 36 | 35 |
+| T-unseen có `<tool_call>` | 43 | 47 | 44 | 37 | 39 | 40 |
+
+- E1 − E2 về số lần gọi trên T-seen: +11, +14, **+3**. Hiệu số `clarify_correct` tương ứng: −12, −15, **−2**. Trên T-unseen: +6, +8, +4 lần gọi so với −9, −9, −3 điểm.
+- Như vậy ở cả ba seed, khoảng chênh `clarify_correct` vẫn có cùng một cơ chế: E1 gọi tool dù thiếu thông tin. Seed 2 khác hai seed trước vì E1 s2 ít gọi hơn hẳn (38 so với 45–50), không phải vì nó hỏi lại theo cách khác.
+
+**Đọc:**
+- Dấu vết của E1 trên chat ngắn mang tính tra cứu lặp lại ở seed thứ ba, theo đúng từng prompt: cùng 4 prompt dùng câu từ chối thừa, cùng `chat:02` và `chat:09` hỏng. Phần này của hiệu ứng thứ tự dữ liệu vững qua seed, khác với `clarify_correct`.
+- Trên bộ P, E1 s2 không hỏi lại nhiều hơn hai seed trước (2/6, như E1 s0). Cải thiện `clarify_correct` của nó trên test chỉ thấy được trên 100 prompt, không thấy trên 6 prompt P.
+
+**Việc còn lại:** thí nghiệm cắt rank ΔW (H6), notebook phân tích, REPORT.md.
