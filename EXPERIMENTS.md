@@ -1627,3 +1627,50 @@ T-unseen cho cùng hình dạng (`call_exact` cuối 0.8, `clarify_correct` cu�
 **Đọc:**
 - Bộ P của seed 2 không có gì mới: các nhận xét ở cuối run (hỏi lại 1–2/6 chỉ ở email/SMS, `select:05` gọi `send_email`, câu từ chối chỉ ở `no_tool:07`) lặp lại qua cả ba seed của E2 và E3.
 - LoRA r64 dừng trên chat kém hơn full fine-tune một chút nhưng nhất quán (khoảng 4 điểm trên C), vì rơi vào vòng lặp nhiều hơn. Điều này khớp với việc E3 ở gần base hơn (KL 0.041–0.044 so với 0.066–0.069), và base lặp rất nhiều. Đây là cái giá nhỏ đi kèm "quên ít hơn" của H5.
+
+## 2026-11-09 — Giả thuyết cho E1 seed 2 (ghi trước khi chạy)
+
+**Run:** `configs/e1_seq.yaml`, seed 2. Cấu hình y như E1 s0 và s1: D_chat × 2 epoch (step 1–625), rồi D_tool × 2 epoch (step 626–1250), một lịch lr, optimizer liên tục. Ranh giới vẫn ở step 625 (4 607 572 token assistant). Chấm test ở khoảng 18 snapshot như hai seed trước.
+
+**Vì sao chạy run này:**
+- Đây là seed còn thiếu cuối cùng: sau run này E1, E2 và E3 r64 đều có 3 seed, nên báo cáo có SD do seed cho cả ba cấu hình.
+- Hiệu ứng thứ tự dữ liệu duy nhất ở cuối run là `clarify_correct`: E1 − E2 là −12.0 (s0) và −15.0 (s1) trên T-seen, CI loại trừ 0. Seed 2 là lần lặp thứ ba.
+- Lưu ý: `clarify_correct` của E2 s2 ở cuối (0.58) thấp hơn E2 s0/s1 (0.62 / 0.61), nên khoảng chênh ghép cặp ở seed 2 có thể nhỏ hơn.
+
+**Giả thuyết run này kiểm:** câu hỏi thứ tự dữ liệu (E1 − E2) ở seed thứ ba; H1–H3 trên E1.
+
+**So sánh:**
+- `python -m src.eval.stats --split test --baseline e0_test/base-zero-shot --compare e1_seq_s2 e2_mix_s2`: ghép theo prompt ở các mốc token cộng dồn chung và step cuối.
+- `--compare e1_seq_s2 e1_seq_s0` và `e1_seq_s1`: mô tả; SD 3 seed của E1.
+- Quên: `src.eval.knowledge --compare` và `src.eval.benchmarks --compare` giữa E1 s2 và E2 s2.
+- Bộ C: đếm output có `<tool_call>` trên `outputs.jsonl` ở các snapshot sau ranh giới.
+
+**Căn cứ:**
+- E1 s0 / s1 ở ranh giới: metric gọi tool bằng 0; `decision_bacc` 0.50; `stop_rate` C 0.90 / 0.94, T-seen 0.49 / 0.575; `clarify_correct` ≤ 0.03; `grounded_correct` 0.50 / 0.27, dao động không đơn điệu trong giai đoạn chat.
+- Sau ranh giới: `false_call_rate` đỉnh 0.64 / 0.63 ở +25–28k; `format_valid` 0.87 / 0.48 ở +25–28k; `call_exact` đạt θ ở +100k ở cả hai seed; bộ C có `<tool_call>` ở 46 / 38 trên 150 ở mốc đầu, 1/150 từ +400k.
+- Cuối run E1 s0 / s1: `call_exact` 0.65 / 0.66 (T-seen), 0.81 / 0.81 (T-unseen); `clarify_correct` 0.50 / 0.46; perplexity 14.10 / 14.10; KL 0.067 / 0.067; `stop_rate` C 0.94 / 0.96.
+- E2 s2 cuối run: `call_exact` 0.67 / 0.82; `clarify_correct` 0.58 / 0.56; perplexity 14.07; KL 0.066.
+
+**Quy tắc đọc (đặt trước):** coi khoảng chênh `clarify_correct` lặp lại nếu E1 s2 − E2 s2 ở step cuối, T-seen, âm với CI loại trừ 0. Nếu CI chứa 0 nhưng ước lượng điểm ≤ −5 thì "cùng chiều, không rõ ở seed này"; nếu ước lượng điểm > −5 thì không lặp lại.
+
+**Dự đoán** ("xuất hiện" là t_reach với θ chính, trên test, T-seen; "token từ ranh giới" là thang thứ hai):
+1. **Ranh giới:** metric gọi tool bằng 0 (CI so với base chứa 0), `decision_bacc` ≈ 0.5; `stop_rate` C ≥ 0.85, T-seen 0.35–0.65; `clarify_correct` ≤ 0.05; `grounded_correct` 0.2–0.85.
+2. **Giai đoạn tool:** `format_valid` đạt ở +25k hoặc +50k; `call_exact` ở +50k–+100k; `decision_bacc` ở +50k–+200k; `clarify_correct` muộn nhất, hoặc không đạt θ chính.
+3. **H1:** format trước `call_exact` ít nhất một checkpoint ở θ chính trên T-seen.
+4. **H2:** "`decision_bacc` muộn nhất" sai. `false_call_rate` đỉnh 0.45–0.80 ở mốc đầu sau ranh giới (+25k–+50k), CI loại trừ 0; cuối run < 0.05.
+5. **H3:** tên vô nghĩa giảm 5–13 điểm ở cuối, cận trên CI < 20; tên đồng nghĩa < 5.
+6. **Thứ tự dữ liệu, cuối run (E1 s2 − E2 s2):**
+   - **`clarify_correct` T-seen thấp hơn 4 tới 16 điểm, CI loại trừ 0** (dự đoán chính). `clarify_correct` T-seen của E1 s2 ở cuối trong 0.40–0.54.
+   - `call_exact` T-seen và T-unseen chênh trong ±4, CI chứa 0; `decision_bacc` và `false_call_rate` chênh dưới 2 điểm.
+7. **Bộ C:** ≥ 20/150 output có `<tool_call>` ở mốc +25k hoặc +50k; ≤ 3/150 từ +400k tới cuối.
+8. **Quên:** perplexity 13.95–14.25, hiệu số với E2 s2 trong ±0.1; KL 0.06–0.075; ARC-Easy/HellaSwag lệch E2 s2 dưới 2.5 điểm; `stop_rate` C cuối ≥ 0.88.
+9. **SD 3 seed của E1 ở cuối:** dưới 2 điểm với `call_exact`, `format_valid`, `decision_bacc`; `clarify_correct` dưới 5.
+10. **Tài nguyên:** khoảng 8 giây/step, GPU đỉnh khoảng 11.1 GiB; train khoảng 3 giờ, cả run 7–8.5 giờ.
+
+**Kết quả coi là bất ngờ, phải kiểm hạ tầng trước khi đọc:**
+- Ranh giới không ở step 625; tổng token khác 6 527 256.
+- `call_exact` > 0.05 ở ranh giới: kiểm D_chat và `order.json`.
+- Loss NaN, hoặc `grad_norm` vọt lên.
+- `call_exact` T-seen cuối < 0.5, hoặc `stop_rate` C cuối < 0.5.
+
+**Chạy:** trên Kaggle, notebook `07_main`, cell 6 với `CONFIG, SEED = "e1_seq", 2`. Cả run khoảng 8 giờ, trong giới hạn 12 giờ của phiên; kiểm hạn mức GPU tuần trước khi bật phiên. Giữ tab Colab nối runtime suốt run; mất kết nối thì làm như E3 r64 s2 (chờ checkpoint, tắt phiên, bật phiên mới, chạy lại cell 1–5 rồi cell 6 để resume).
