@@ -1674,3 +1674,135 @@ T-unseen cho cùng hình dạng (`call_exact` cuối 0.8, `clarify_correct` cu�
 - `call_exact` T-seen cuối < 0.5, hoặc `stop_rate` C cuối < 0.5.
 
 **Chạy:** trên Kaggle, notebook `07_main`, cell 6 với `CONFIG, SEED = "e1_seq", 2`. Cả run khoảng 8 giờ, trong giới hạn 12 giờ của phiên; kiểm hạn mức GPU tuần trước khi bật phiên. Giữ tab Colab nối runtime suốt run; mất kết nối thì làm như E3 r64 s2 (chờ checkpoint, tắt phiên, bật phiên mới, chạy lại cell 1–5 rồi cell 6 để resume).
+
+## 2026-11-10 — Kết quả E1 seed 2 (test)
+
+**Chạy:** `configs/e1_seq.yaml`, seed 2, notebook `07_main` trên Kaggle (Colab nối vào Kaggle Jupyter Server, T4, một GPU). Bundle `0ff9aeff…`, trùng với repo.
+- Train: 1250 step, 6 527 256 token assistant. Ranh giới ở step 625 (4 607 572 token), đúng như hai seed trước. Loss trung bình trên log 0.598; không có NaN; `grad_norm` lớn nhất 2.00. Loss giảm qua ranh giới (0.71 ở step 625 → 0.44 ở 635 → 0.40 ở 640), không vọt lên. Không lần đẩy checkpoint nào lỗi.
+- Bị ngắt ba lần, cả ba lần resume từ checkpoint trên Hub:
+  1. Ngày 09/11 Kaggle trục trặc: phiên kẹt ở step 500, bật phiên mới không lên. Ngày 10/11 chạy tiếp từ step 501.
+  2. Khoảng 09:00, tab Colab mất kết nối runtime; train vẫn chạy tới checkpoint step 700. Tắt phiên, bật phiên mới.
+  3. Lúc dựng phiên mới, Colab mất kết nối lần nữa. Khởi động lại bridge, nối lại, resume từ step 701; từ đó chạy một mạch tới hết chấm.
+- Một nguyên nhân có thể là đầu ra cell 6 quá lớn (thanh tiến trình khi đẩy checkpoint 4.3 GB). Cell 6 trên Drive giờ gọi `disable_progress_bars()`; notebook của repo chưa có.
+- 8.4 giây/step ở tiến trình cuối (550 step), GPU đỉnh 11.07 GiB. Train xong 11:01, chấm xong khoảng 15:50 (giờ Việt Nam).
+- Trọng số: `trantam31/smollm2-360m-e1-seq-s2`. Output và metric: repo kết quả, thư mục `e1_seq_s2/` (private).
+
+**Snapshot cuối (step 1250), test, CI bootstrap 95% theo cụm; số trong ngoặc tròn là E2 s2 / E1 s0 / E1 s1:**
+
+| | T-seen | T-unseen |
+|---|---|---|
+| `format_valid` | 0.99 [0.97, 1.00] (1.00 / 1.00 / 0.99) | 0.97 (0.97 / 0.98 / 0.97) |
+| `call_exact` | 0.66 [0.60, 0.71] (0.67 / 0.65 / 0.66) | 0.82 (0.82 / 0.81 / 0.81) |
+| `decision_bacc` | 0.992 (0.998 / 0.993 / 0.993) | 0.992 |
+| `false_call_rate` | 0.01 [0.00, 0.03] (0.00 / 0.01 / 0.01) | 0.00 |
+| `clarify_correct` | **0.56** [0.43, 0.67] (0.58 / 0.50 / 0.46) | 0.53 (0.56 / 0.52 / 0.49) |
+| `grounded_correct` | 0.95 (0.96 / 0.94 / 0.95) | 0.96 |
+| `stop_rate` C | 0.95 [0.91, 0.98] (0.95 / 0.94 / 0.96) | |
+
+**Ranh giới (step 625, chỉ mới học chat):**
+- `format_valid`, `call_exact`, `tool_name_acc` và `false_call_rate` đều bằng 0; CI so với base là [0, 0]. `decision_bacc` 0.50.
+- `stop_rate` C 0.93 [0.88, 0.97]; T-seen 0.578.
+- `clarify_correct` 0.04.
+- `grounded_correct` 0.29 [0.13, 0.51]. Trong giai đoạn chat nó đi 0.23 → 0.14 → 0.28 → 0.49 → 0.32 → 0.29 (step 27 → 625), không đơn điệu, như hai seed trước.
+
+**Giai đoạn tool, theo token từ ranh giới (T-seen; mốc +26k, +52k, +102k, +200k, +402k, +802k, +1.6M, +1.79M, cuối):**
+- `false_call_rate`: **0.60**, 0.58, 0.24, 0.19, 0.11, 0.07, 0.01, 0.01, 0.01. Đỉnh ở +26k, CI so với base [+0.51, +0.69].
+- `format_valid`: 0.80, 0.97, 0.98, 0.98, 0.99, 1.00, 0.99, 0.99, 0.99.
+- `call_exact`: 0.27, 0.47, 0.53, 0.57, 0.62, 0.65, 0.65, 0.66, 0.66.
+- `decision_bacc`: 0.70, 0.71, 0.88, 0.90, 0.94, 0.96, 0.99, 0.99, 0.99.
+- `clarify_correct`: 0.00, 0.01, 0.05, 0.37, 0.42, 0.43, **0.56**, 0.56, 0.56.
+- `grounded_correct` nhảy từ 0.16 (+26k) lên 0.80 (+52k), rồi 0.88–0.95.
+- `stop_rate` C hụt xuống 0.85 ở +26k rồi về 0.91–0.97.
+
+**t_reach (θ chính, T-seen, token cộng dồn):** `format_valid`, `tool_name_acc` 4.63M (+26k) → `grounded_correct` 4.66M (+52k) → `call_exact`, `decision_bacc` 4.71M (+102k) → `clarify_correct` 6.21M (+1.6M). Đây là seed E1 đầu tiên mà `clarify_correct` đạt θ chính 0.5 (seed 0 "unconfirmed", seed 1 không đạt).
+
+**Bộ C, số output có `<tool_call>` trên 150:**
+- Giai đoạn chat: 0 ở mọi snapshot.
+- Sau ranh giới: **33** ở +26k, 35 ở +52k, 7 ở +102k, 2 ở +200k, 2 ở +402k, 3 ở +802k, 1 từ +1.6M tới cuối.
+- Seed 0 / 1: 46 / 38 ở mốc đầu, 1 từ +400k.
+
+**Thứ tự dữ liệu, hiệu số ghép cặp E1 s2 − E2 s2** (`--compare e1_seq_s2 e2_mix_s2`, cùng mốc token cộng dồn, cùng prompt):
+- **Cuối run, `clarify_correct` T-seen −2.0 điểm [−7.7, +3.7]; T-unseen −3.0 [−7.1, +1.7].** Ở 6.4M cũng vậy. Seed 0 / 1: −12.0 / −15.0 (T-seen), CI loại trừ 0.
+- Ở 3.2M (E1 chưa học tool), `clarify_correct` của E1 là 0.04 so với 0.48 của E2. Tới +1.6M sau ranh giới, E1 s2 đã lên 0.56 và đuổi kịp.
+- Các metric gọi tool khác bằng nhau:
+  - `call_exact`: T-seen −1.7 [−4.4, +1.0]; T-unseen 0.0 [−2.2, +2.2].
+  - `decision_bacc`: −0.7 (T-seen) / −0.2 (T-unseen).
+  - `false_call_rate`: +1.0 [0.0, +3.3] (T-seen) / 0.0 (T-unseen).
+  - `grounded_correct`: −1.0.
+
+**Hiệu số ghép cặp giữa các seed của E1** (chỉ để mô tả):
+- `call_exact` chênh dưới 1 điểm.
+- `clarify_correct` T-seen: E1 s2 − E1 s0 **+6.0 [+1.0, +11.4]**; E1 s2 − E1 s1 **+10.0 [+4.4, +16.7]**.
+- `clarify_correct` T-unseen: +1.0 và +4.0, CI chứa 0.
+
+**Gộp ba seed, `clarify_correct` cuối run E1 − E2.** Dùng script tạm như phần `stop_rate` C ở mục trước: tính hiệu số ghép cặp từng seed trên cùng 100 prompt và cùng các lần lấy mẫu cụm, rồi lấy trung bình.
+- T-seen: −12.0, −15.0, −2.0 → **gộp −9.7 [−15.0, −5.4]**.
+- T-unseen: −9.0, −9.0, −3.0 → gộp −7.0 [−11.6, −3.3].
+- CI gộp chỉ phản ánh bất định do tập prompt.
+- Tính theo seed (n = 3, T-seen): trung bình −9.7, SD 6.8. Khoảng t 95% là [−26.6, +7.2], chứa 0.
+
+**SD 3 seed ở cuối run (điểm %, T-seen trừ khi ghi khác):**
+
+| | E1 | E2 | E3 r64 |
+|---|---|---|---|
+| `call_exact` | 65.4 ± 0.4 | 66.9 ± 0.5 | 65.1 ± 1.2 |
+| `call_exact` T-unseen | 81.2 ± 0.5 | 80.9 ± 0.8 | 80.3 ± 0.7 |
+| `format_valid` | 99.1 ± 0.5 | 99.7 ± 0.3 | 99.4 ± 0.2 |
+| `decision_bacc` | 99.3 ± 0.1 | 99.6 ± 0.2 | 99.7 ± 0.3 |
+| `clarify_correct` | **50.7 ± 5.0** | 60.3 ± 2.1 | 60.0 ± 1.7 |
+| `clarify_correct` T-unseen | 51.3 ± 2.1 | 58.3 ± 2.5 | 59.0 ± 2.0 |
+| `stop_rate` C | 95.1 ± 1.0 | 94.9 ± 1.4 | 90.4 ± 1.9 |
+
+**H3, hiệu số ghép cặp T-rename − T-seen (`call_exact`, cuối run):**
+- Tên vô nghĩa: giảm 9.3 điểm [4.5, 14.2]. E1 s0 / s1: 8.3 / 10.0.
+- Tên đồng nghĩa: giảm 3.3 [−0.3, 7.3].
+
+**Quên (snapshot cuối):**
+- Perplexity wikitext-2 14.13.
+  - So với E2 s2: +0.060 [+0.045, +0.075].
+  - So với E1 s0 / s1: +0.033 / +0.039, CI loại trừ 0.
+  - So với base: +1.13 [+1.03, +1.25].
+- KL tới base 0.069 (E2 s2: 0.066; E1 s0 / s1: 0.067). E1 s2 − E2 s2 là +0.0031 [+0.0026, +0.0036].
+- ARC-Easy acc / acc_norm 0.700 / 0.668; HellaSwag 0.442 / 0.556. So với E2 s2, E1 s0, E1 s1 và base, cả bốn ô CI chứa 0. Lệch lớn nhất là ARC-Easy acc −1.4 [−3.0, +0.2] so với E2 s2.
+
+**Đối chiếu với dự đoán ghi trước khi chạy:**
+1. **Ranh giới:** đúng cả bốn vế.
+   - Metric gọi tool bằng 0, CI so với base [0, 0]; `decision_bacc` 0.50.
+   - `stop_rate` C 0.93; T-seen 0.578.
+   - `clarify_correct` 0.04.
+   - `grounded_correct` 0.29.
+2. **Giai đoạn tool:** đúng. `format_valid` đạt ở +26k; `call_exact` và `decision_bacc` ở +102k; `clarify_correct` đến muộn nhất (+1.6M).
+3. **H1:** đúng.
+   - θ chính, T-seen: format (+26k) đến trước `call_exact` (+102k) hai checkpoint.
+   - θ 0.3: trước một checkpoint (+26k so với +52k).
+   - θ 0.7: `call_exact` T-seen không đạt.
+   - T-unseen, θ chính: +26k so với +52k.
+4. **H2:** đúng. `decision_bacc` không muộn nhất. `false_call_rate` đỉnh 0.60 ở +26k, CI loại trừ 0; cuối run 0.01.
+5. **H3:** đúng. Tên vô nghĩa giảm 9.3, trong 5–13; cận trên 14.2 < 20. Tên đồng nghĩa 3.3 < 5 (cận trên 7.3).
+6. **Thứ tự dữ liệu:** **sai ở dự đoán chính.**
+   - `clarify_correct` T-seen −2.0 [−7.7, +3.7]. Ước lượng điểm > −5, nên theo quy tắc đọc đặt trước: **không lặp lại ở seed này.**
+   - `clarify_correct` T-seen của E1 s2 ở cuối là 0.56, trên khoảng 0.40–0.54: **sai.** Khoảng chênh nhỏ lại không phải vì E2 s2 thấp (0.58 nằm giữa E2 s0 và s1), mà vì E1 s2 cao hơn hai seed E1 trước 6–10 điểm.
+   - `call_exact` chênh trong ±4, CI chứa 0; `decision_bacc` và `false_call_rate` chênh dưới 2 điểm: đúng.
+7. **Bộ C:** đúng. 33/150 ở +26k (≥ 20); 1–3/150 từ +402k (≤ 3).
+8. **Quên:** đúng cả bốn vế.
+   - Perplexity 14.13; hiệu số với E2 s2 +0.06, trong ±0.1 (CI loại trừ 0 nhưng rất nhỏ).
+   - KL 0.069.
+   - ARC/HellaSwag lệch E2 s2 dưới 1.5 điểm.
+   - `stop_rate` C 0.95.
+9. **SD 3 seed của E1:** `call_exact`, `format_valid`, `decision_bacc` dưới 1 điểm: đúng. `clarify_correct` T-seen 5.0 (5.03), không dưới 5: **sai, sát nút.**
+10. **Tài nguyên:** 8.4 giây/step và 11.07 GiB, khớp. Tổng thời gian dài hơn nhiều vì bị ngắt ba lần.
+- Không có kết quả "bất ngờ" nào trong danh sách đã ghi.
+
+**Đọc (ba seed của E1, câu hỏi thứ tự dữ liệu):**
+- **Hiệu ứng thứ tự dữ liệu lên `clarify_correct` yếu hơn hai seed đầu gợi ý.**
+  - Cả ba seed cùng chiều (E1 thấp hơn E2); trung bình −9.7 điểm trên T-seen.
+  - Nhưng độ lớn dao động mạnh theo seed (−12, −15, −2). Với n = 3 seed, khoảng tin cậy theo seed chứa 0.
+  - CI gộp [−15.0, −5.4] chỉ nói rằng trên tập prompt này, trung bình ba seed khác 0. Nó không tính phần bất định do seed.
+- **Nguồn dao động nằm ở E1, không ở E2.** SD `clarify_correct` của E1 là 5.0 điểm; của E2 và E3 khoảng 2. Học tool sau chat cho kết quả hỏi lại kém ổn định hơn học trộn. Có hai cách giải thích:
+  - Hiệu ứng thật của thứ tự dữ liệu: kết quả phụ thuộc thứ tự mẫu trong giai đoạn tool, khi model phải bỏ thói quen trả lời luôn của giai đoạn chat.
+  - Nhiễu: bộ `missing_info` chỉ có 100 prompt, nên 6–10 điểm chỉ là 6–10 prompt.
+- **Các metric khác vẫn như hai seed trước.** Gọi tool, quyết định gọi và quên đều không phụ thuộc thứ tự dữ liệu.
+- **Diễn biến sau ranh giới lặp lại lần thứ ba.** `false_call_rate` đỉnh khoảng 0.6 rồi về 0.01. Chat bị kéo về định dạng tool (33–46/150) rồi hồi lại trong khoảng 400k token.
+- **Cách viết cho báo cáo:** "học chat trước làm `clarify_correct` thấp hơn trung bình khoảng 10 điểm (T-seen; 7 điểm T-unseen), cùng chiều ở cả ba seed, nhưng độ lớn không ổn định (−2 tới −15)". Không viết là một hiệu ứng vững.
+
+**Việc còn lại:** bộ P của E1 s2 (chưa đọc). REPORT.md với SD 3 seed của E1, E2, E3 r64.
