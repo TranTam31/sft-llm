@@ -1603,3 +1603,27 @@ T-unseen cho cùng hình dạng (`call_exact` cuối 0.8, `clarify_correct` cu�
 - Mục ‖ΔW‖ cho thấy độ lớn cập nhật của r64 không nhỏ hơn E2 ở đầu run, nên độ chậm quanh 200k không do cập nhật quá nhỏ; hạng thấp (stable rank 2.1 so với 22) là ứng viên còn lại.
 
 **Việc còn lại:** bộ P của E2 s2 và E3 s2 (chưa đọc). E1 s2, ghi giả thuyết trước. REPORT.md.
+
+## 2026-11-09 — Bộ P của seed 2 (E2, E3 r64) và `stop_rate` C gộp ba seed
+
+**Loại hoạt động:** đếm bằng script và đọc output bộ P (60 prompt) ở mọi snapshot của E2 s2 và E3 r64 s2, đặt cạnh seed 0 và 1; không sinh lại. Rồi một phép gộp ba seed cho `stop_rate` C cuối run, trên `outputs.jsonl` test đã có. Bộ P nhỏ (6–10 prompt mỗi nhóm), nên phần P là mô tả, không phải số đo.
+
+**Bộ P, snapshot cuối (E2 s2 / E3 s2):**
+- Chat và kiến thức: cả 20 prompt trả lời bình thường ở cả hai run, không `<tool_call>`, không câu từ chối; như E2/E3 ở hai seed trước.
+- Câu từ chối cố định chỉ ở `no_tool:07` (giá vé máy bay), chỗ duy nhất từ chối là đúng, ở cả hai run.
+- Hỏi lại khi thiếu thông tin: 2/6 ở cả hai run, vẫn là `missing_info:04` (email chủ nhà) và `06` (SMS). Bốn prompt còn lại điền mặc định rồi gọi như mọi run trước ("New York City", USD→CAD hoặc EUR, `bill_amount: 100`, ngày "2022-04-01").
+- Lỗi chọn tool ổn định qua cả sáu run E2/E3: `select:05` (nhắn tin tới số điện thoại) gọi `send_email`. `select:03` (suất chiếu Dune ở Chicago) gọi `get_weather` ở cả hai run; E2 s2 gọi thêm `find_movie_showtimes` sau đó.
+- `no_tool:06` ("déjà vu"): cả hai run trả lời thẳng, không gọi `translate_text` như ba run seed 1.
+- Vòng lặp lặp lại tới giới hạn token (repetition_rate > 0.4) ở vài prompt sáng tác/công thức: E2 s2 `chat:01`, `no_tool:01`; E3 s2 `chat:01`, `no_tool:01`, `no_tool:03`. Seed trước: E2 s1 `no_tool:01`, E3 s0 `no_tool:03`.
+
+**Bộ P, theo checkpoint:** ở step 20 (khoảng 100k), E2 s2 có `<tool_call>` ở 21/21 prompt cần tool, 6/20 prompt chat, dừng ở 9/60 output; E3 s2 có 11/21, 0/20 chat, và chưa dừng ở output nào (0/60). Từ step 39 cả hai dừng ở 54–58/60. Lặp lại đúng hình ảnh của seed 1 trên P và khớp hiệu số test ở 100k (E3 đi trước về gọi tool thừa, nhưng chưa biết dừng).
+
+**`stop_rate` C cuối run, E3 r64 − E2, gộp ba seed** (script tạm, dùng `clusters`, `resample_weights` của `src.eval.stats`; mỗi seed là hiệu số ghép cặp trên cùng 150 prompt và cùng các lần lấy mẫu cụm, rồi lấy trung bình qua seed):
+- Từng seed: −4.0 [−9.5, +1.4], −3.3 [−7.9, +0.7], −6.0 [−11.3, −1.3] (khớp `compare_*.csv`).
+- **Gộp: −4.4 điểm [−7.7, −1.2].** CI chỉ phản ánh bất định do tập prompt; ba seed cùng chiều nên phần do seed không đổi kết luận về chiều.
+- Trên T-seen (600 prompt), gộp −0.4 [−1.2, +0.4]: khác biệt chỉ có ở chat.
+- **Nguyên nhân là vòng lặp:** output C không dừng của E3 là 16 / 11 / 16 (trong đó 15 / 8 / 14 lặp lại, repetition_rate > 0.3), của E2 là 10 / 6 / 7 (7 / 2 / 6 lặp lại). `repetition_rate` trung bình trên C: E3 0.10–0.11, E2 0.064–0.070, E1 0.06–0.08; base zero-shot 0.60, instruct 0.075. Không output C nào có `<tool_call>`.
+
+**Đọc:**
+- Bộ P của seed 2 không có gì mới: các nhận xét ở cuối run (hỏi lại 1–2/6 chỉ ở email/SMS, `select:05` gọi `send_email`, câu từ chối chỉ ở `no_tool:07`) lặp lại qua cả ba seed của E2 và E3.
+- LoRA r64 dừng trên chat kém hơn full fine-tune một chút nhưng nhất quán (khoảng 4 điểm trên C), vì rơi vào vòng lặp nhiều hơn. Điều này khớp với việc E3 ở gần base hơn (KL 0.041–0.044 so với 0.066–0.069), và base lặp rất nhiều. Đây là cái giá nhỏ đi kèm "quên ít hơn" của H5.
