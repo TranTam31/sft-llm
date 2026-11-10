@@ -684,8 +684,11 @@ for name in ("d_chat", "d_tool"):
 Chọn `CONFIG` và `SEED`. Ghi giả thuyết của run vào EXPERIMENTS.md **trước** lần chạy đầu (PLAN Giai đoạn 3). Theo dõi thay vì chờ cell trả lời: lúc train, đọc `progress.json` của repo model (step, token, snapshot gần nhất, giờ đẩy; cập nhật mỗi checkpoint); lúc chấm, mỗi snapshot xong là một commit trên repo kết quả; commit cuối của cell là `<run>: knowledge`."""),
         cell("code", '''import json
 from huggingface_hub import HfApi, hf_hub_download, upload_file
-from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError
+from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError, disable_progress_bars
 from src.train import load_config
+
+# Checkpoint uploads (4.3 GB) print thousands of progress lines; a huge cell output may drop the Colab connection.
+disable_progress_bars()
 
 CONFIG, SEED = "e2_mix", 0
 RUN = load_config(f"configs/{CONFIG}.yaml", seed=SEED)["run_name"]
